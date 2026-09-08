@@ -56,12 +56,25 @@ dsh plugin --profile web add file:/path/to/dsh-paste-code-block
 
 ```
 dsh-paste-code-block/
-├── client.js          # Web（浏览器侧）半端 —— 粘贴拦截、徽章样式、详情卡片
-├── index.js           # Host（Node 侧）半端 —— 有意为空（纯 UI 插件）
-├── cordis.patch.yml   # DSH bundle patch，声明宿主插件
-├── package.json       # 包与 DSH 插件清单
-├── README.md          # English
-└── README.zh-CN.md    # 简体中文
+├── src/
+│   ├── client.js       # Web（浏览器侧）半端 —— 粘贴拦截、徽章样式、详情卡片
+│   ├── index.js        # Host（Node 侧）半端 —— 有意为空（纯 UI 插件）
+│   └── parse.js        # 纯文本块解析逻辑（规范版，含单元测试）
+├── tests/
+│   └── parse.test.js   # node:test 单元测试（针对 src/parse.js）
+├── docs/
+│   └── design.md       # 设计说明（编号复用、锚点稳定、codec）
+├── cordis.patch.yml    # DSH bundle patch，声明宿主插件
+├── package.json        # 包与 DSH 插件清单
+├── README.md           # English
+└── README.zh-CN.md     # 简体中文
+```
+
+## 开发
+
+```sh
+npm run check   # 语法检查两个 JS 半端
+npm test        # 运行单元测试（node:test）
 ```
 
 ## License

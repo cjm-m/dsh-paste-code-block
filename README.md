@@ -54,14 +54,25 @@ dsh plugin --profile web add file:/path/to/dsh-paste-code-block
 
 ```
 dsh-paste-code-block/
-├── client.js          # Web (browser) half — paste capture, chip styling, detail card
-├── index.js           # Host (node) half — intentionally empty (pure UI plugin)
-├── cordis.patch.yml   # DSH bundle patch declaring the host plugin
-├── package.json       # Package + DSH plugin manifest
-├── README.md          # English
-└── README.zh-CN.md    # 简体中文
+├── src/
+│   ├── client.js       # Web (browser) half — paste capture, chip styling, detail card
+│   ├── index.js        # Host (node) half — intentionally empty (pure UI plugin)
+│   └── parse.js        # Pure block-parsing logic (canonical, unit-tested)
+├── tests/
+│   └── parse.test.js   # node:test unit tests for src/parse.js
+├── docs/
+│   └── design.md       # Design rationale (numbering, anchor stability, codec)
+├── cordis.patch.yml    # DSH bundle patch declaring the host plugin
+├── package.json        # Package + DSH plugin manifest
+├── README.md           # English
+└── README.zh-CN.md     # 简体中文
 ```
 
-## License
+## Development
+
+```sh
+npm run check   # syntax-check both JS halves
+npm test        # run the unit tests (node:test)
+```
 
 MIT — see [LICENSE](./LICENSE).

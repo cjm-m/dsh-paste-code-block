@@ -14,15 +14,16 @@
     "ui"
   ],
   "type": "module",
-  "main": "./index.js",
+  "main": "./src/index.js",
   "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./parse": "./src/parse.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "client.js",
-    "index.js",
+    "src/",
+    "docs/",
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
@@ -59,6 +60,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js"
+    "check": "node --check src/index.js && node --check src/client.js",
+    "test": "node --test 'tests/**/*.test.js'"
   }
 }
