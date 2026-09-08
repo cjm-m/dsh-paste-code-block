@@ -1,0 +1,11 @@
+node_modules/
+.git/
+.gitignore
+.github/
+*.tgz
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/
+coverage/
+test/
