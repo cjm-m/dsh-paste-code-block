@@ -30,12 +30,20 @@
 
 需要 DSH `0.1.x`（当前为开发者预览版，接口可能变化）。
 
-```sh
-# 从本目录本地安装
-dsh plugin --profile web add file:/path/to/dsh-paste-code-block
+已发布到 **npm**，可直接按包名安装：
 
-# 或打包发布后
-# dsh plugin --profile web add dsh-paste-code-block
+```sh
+dsh plugin --profile web add dsh-paste-code-block
+```
+
+也可以从本 Git 仓库或本地目录安装：
+
+```sh
+# 从 GitHub
+dsh plugin --profile web add github:cjm-m/dsh-paste-code-block
+
+# 从本地目录
+dsh plugin --profile web add file:/path/to/dsh-paste-code-block
 ```
 
 安装后**重启 `dsh web`** 生效。

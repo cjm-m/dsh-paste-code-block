@@ -28,12 +28,20 @@ Paste text/code into the DSH Web composer → it collapses into a **bordered, co
 
 Requires DSH `0.1.x` (current developer preview — APIs may change).
 
-```sh
-# Local install from this directory
-dsh plugin --profile web add file:/path/to/dsh-paste-code-block
+Published on **npm** — install directly by name:
 
-# Or after publishing
-# dsh plugin --profile web add dsh-paste-code-block
+```sh
+dsh plugin --profile web add dsh-paste-code-block
+```
+
+Alternatively, install from this Git repository or a local folder:
+
+```sh
+# From GitHub
+dsh plugin --profile web add github:cjm-m/dsh-paste-code-block
+
+# From a local checkout
+dsh plugin --profile web add file:/path/to/dsh-paste-code-block
 ```
 
 **Restart `dsh web`** after installing.
