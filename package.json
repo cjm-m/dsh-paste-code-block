@@ -1,9 +1,17 @@
 {
   "name": "dsh-paste-code-block",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cherry Studio-style paste: pasted text/code blocks into the DSH Web composer render as a bordered, collapsible, language-tagged card instead of a long flat string; the original text is restored as a fenced block on send.",
   "license": "MIT",
   "author": "DSH paste-code-block contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cjm-m/dsh-paste-code-block.git"
+  },
+  "homepage": "https://github.com/cjm-m/dsh-paste-code-block#readme",
+  "bugs": {
+    "url": "https://github.com/cjm-m/dsh-paste-code-block/issues"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",
