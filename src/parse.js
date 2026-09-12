@@ -39,8 +39,9 @@ export function detectLang(text) {
 
 /**
  * Parse pasted text into a block, or null when it is ordinary short prose
- * that should paste plainly. `isCode` drives both the chip wording
- * ("复制代码块N" vs "复制文本块N") and the fenced language on send.
+ * that should paste plainly. `isCode` drives both the chip label (registered
+ * per locale via i18n key `block.code` / `block.text` — see `src/i18n.js`)
+ * and the fenced language on send.
  */
 export function parseBlock(raw) {
   const text = String(raw || '').replace(/^\uFEFF/, '')

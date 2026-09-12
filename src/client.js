@@ -15,8 +15,86 @@ window.__ModuleLoader__.load({
     const MARK = 'data-dsh-pcb'
     const MARK_SESSION = 'data-dsh-pcb-session'
     const DETAIL_NS = 'dsh-pcb-detail'
+    const CHIP_X_CLASS = 'dsh-pcb-chip-x'
 
-    // ===== Block parsing =====================================================
+    // ===== Locale (embedded copy of src/i18n.js — keep the two in sync) =====
+    const NS = 'paste-code-block'
+    const L10N = {
+      zh: {
+        'block.code': '复制代码块{n}',
+        'block.text': '复制文本块{n}',
+        'detail.aria': '代码块详情',
+        'slot.label': '粘贴代码块详情',
+        'lines.one': '{count} 行',
+        'lines.other': '{count} 行',
+        'expand': '展开',
+        'collapse': '折叠',
+        'copy': '复制',
+        'copied': '已复制',
+        'hide': '收起',
+        'remove': '移除',
+        'edit.aria': '编辑代码块内容',
+        'error.stale': '代码块已失效，请重新粘贴',
+      },
+      en: {
+        'block.code': 'Code block #{n}',
+        'block.text': 'Text block #{n}',
+        'detail.aria': 'Block details',
+        'slot.label': 'Pasted block details',
+        'lines.one': '{count} line',
+        'lines.other': '{count} lines',
+        'expand': 'Expand',
+        'collapse': 'Collapse',
+        'copy': 'Copy',
+        'copied': 'Copied',
+        'hide': 'Hide',
+        'remove': 'Remove',
+        'edit.aria': 'Edit block content',
+        'error.stale': 'This block is no longer valid — paste it again',
+      },
+    }
+
+    function createT(locale) {
+      const dict = L10N[locale] || L10N.en
+      return (key, params) => {
+        let text = dict[key] != null ? dict[key] : (L10N.en[key] != null ? L10N.en[key] : key)
+        if (params) text = text.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m))
+        return text
+      }
+    }
+
+    function detectBrowserLocale() {
+      try {
+        const langs = [...(navigator.languages || []), navigator.language].filter(Boolean).map((l) => String(l).toLowerCase())
+        return langs.some((l) => l.startsWith('zh')) ? 'zh' : 'en'
+      } catch (e) {
+        return 'en'
+      }
+    }
+
+    /**
+     * Recognize a rendered block label in ANY shipped locale and recover its
+     * `{ type, n }` identity — this keeps chip clicks, ✕ deletes, and the
+     * locale-switch retitling correct even for chips inserted under a
+     * different language than the one currently active. Null otherwise.
+     */
+    function parseBlockLabel(text) {
+      if (!text) return null
+      for (const dict of [L10N.zh, L10N.en]) {
+        for (const key of ['block.code', 'block.text']) {
+          const pattern = new RegExp(
+            '^' +
+              dict[key].replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\{n\\\}/g, '(\\d+)') +
+              '$',
+          )
+          const m = pattern.exec(text)
+          if (m) return { type: key === 'block.code' ? 'code' : 'text', n: Number(m[1]) }
+        }
+      }
+      return null
+    }
+
+    // ===== Block parsing (embedded copy of src/parse.js — keep in sync) =====
     const SHEBANG_LANG = {
       python: 'python', python3: 'python', node: 'javascript', nodejs: 'javascript',
       ruby: 'ruby', bash: 'bash', sh: 'bash', zsh: 'bash', dash: 'bash',
@@ -47,8 +125,9 @@ window.__ModuleLoader__.load({
 
     /**
      * Parse pasted text into a block, or null when it is ordinary short prose
-     * that should paste plainly. `isCode` drives both the chip wording
-     * ("复制代码块N" vs "复制文本块N") and the fenced language on send.
+     * that should paste plainly. `isCode` drives both the chip label
+     * (i18n key `block.code` vs `block.text`, e.g. "复制代码块N" / "Code block
+     * #N") and the fenced language on send.
      */
     function parseBlock(raw) {
       const text = String(raw || '').replace(/^\uFEFF/, '')
@@ -110,13 +189,20 @@ window.__ModuleLoader__.load({
 
     // ===== Draft controller ==================================================
     class BlockController {
-      constructor(ctx) {
+      /**
+       * @param ctx - cordis client context (sessions/conversation services).
+       * @param t - locale-bound translator, `(key, params) => string`, that
+       *   reflects the ACTIVE DSH language at call time (from
+       *   `ctx.locale.bind(NS)`), or the browser-guessed fallback.
+       */
+      constructor(ctx, t) {
         this.ctx = ctx
+        this.t = t
         this.list = new Map()      // sessionId -> Block[]
         this.selected = new Map()  // sessionId -> ref
         this.used = new Map()      // sessionId -> {code:Set, text:Set}
         this.refIndex = new Map()  // ref -> {sessionId, block}
-        this.labelIndex = new Map()// label -> ref
+        this.labelIndex = new Map()// label (insert-time language) -> ref
         this.inFlight = new Map()
         this.expiry = new Map()
         this.serializing = new Set()
@@ -148,8 +234,9 @@ window.__ModuleLoader__.load({
         if (used) used[type]?.delete(n)
       }
 
+      /** Current-language label for a block number, e.g. 复制代码块2 / Code block #2. */
       labelFor(block, n) {
-        return block.isCode ? `复制代码块${n}` : `复制文本块${n}`
+        return this.t(block.isCode ? 'block.code' : 'block.text', { n })
       }
 
       listFor(sessionId) { return this.list.get(String(sessionId)) || [] }
@@ -167,6 +254,31 @@ window.__ModuleLoader__.load({
         const s = this.listeners.get(String(sessionId))
         if (!s) return
         for (const fn of s) fn()
+      }
+
+      /**
+       * Recompute every tracked block's label under the CURRENT language
+       * (called when the locale snapshot changes). Keeps `labelIndex`
+       * consistent and re-publishes the affected sessions so the detail card
+       * re-renders; the chip DOM is synced by the client's `scanChips` pass.
+       * @returns the array of `{ sessionId, block }` whose label changed.
+       */
+      retitleAll() {
+        const changed = []
+        const affected = new Set()
+        for (const [k, entries] of this.list) {
+          for (const block of entries) {
+            const want = this.labelFor(block, block.labelNumber)
+            if (want === block.label) continue
+            this.labelIndex.delete(block.label)
+            block.label = want
+            this.labelIndex.set(want, block.id)
+            changed.push({ sessionId: k, block })
+            affected.add(k)
+          }
+        }
+        for (const k of affected) this.publish(k)
+        return changed
       }
 
       scope(sessionId) {
@@ -220,9 +332,21 @@ window.__ModuleLoader__.load({
         return true
       }
 
-      blockForLabel(label) {
+      /**
+       * Resolve a chip's rendered text (label in ANY locale — see
+       * `parseBlockLabel`) back to its block. Prefers the insert-time label
+       * index, then falls back to the (type, number) identity within the
+       * chip's own session, so clicks keep working after a language switch.
+       */
+      blockForLabel(sessionId, label) {
         const ref = this.labelIndex.get(label)
-        return ref ? this.refIndex.get(ref)?.block : undefined
+        if (ref) {
+          const record = this.refIndex.get(ref)
+          if (record) return record.block
+        }
+        const parsed = parseBlockLabel(label)
+        if (!parsed) return undefined
+        return this.listFor(sessionId).find((b) => b.type === parsed.type && b.labelNumber === parsed.n)
       }
 
       select(sessionId, ref) {
@@ -281,15 +405,16 @@ window.__ModuleLoader__.load({
 
       async serialize(ref) {
         const record = this.refIndex.get(ref)
-        if (!record) throw new Error('代码块已失效，请重新粘贴')
+        if (!record) throw new Error(this.t('error.stale'))
         this.markSerializing(ref)
         return serializeBlock(record.block)
       }
 
       /**
        * Keep only blocks whose inline chip is still present in the draft (the
-       * user may delete a chip with Backspace). During a submit the chips may
-       * transiently vanish, so prune is deferred there.
+       * user may delete a chip with Backspace, or with the chip's ✕ button).
+       * During a submit the chips may transiently vanish, so prune is deferred
+       * there.
        */
       reconcile(sessionId, occurrences, phase) {
         const k = String(sessionId)
@@ -400,6 +525,10 @@ window.__ModuleLoader__.load({
       const blocks = useBlocks(props.controller, props.sessionId)
       const selected = useSelectedBlock(props.controller, props.sessionId)
       const railRef = React.useRef(null)
+      // `props.t` is the slot's locale seat (a fresh reference on every locale
+      // revision, and the outlet re-renders with it); the controller's
+      // translator is the defensive fallback for non-locale compositions.
+      const t = props.t || props.controller.t
 
       useComposerMark(railRef, props.sessionId, input.draftRev, blocks.length > 0)
 
@@ -413,6 +542,10 @@ window.__ModuleLoader__.load({
         }
       }, [props.controller, props.sessionId, promptError])
 
+      // Re-sync the chip DOM (localized titles, ✕ buttons) after every dock
+      // render — covers attach, removal, selection, and locale switches.
+      React.useEffect(() => { props.syncChips() })
+
       const empty = !selected
       return React.createElement(
         'div',
@@ -421,20 +554,21 @@ window.__ModuleLoader__.load({
           className: `dsh-pcb-dock${empty ? ' dsh-pcb-dock--empty' : ''}`,
           'data-dsh-pcb-rail': '',
           'data-dsh-pcb-session': String(props.sessionId),
-          'aria-label': '代码块详情',
+          'aria-label': t('detail.aria'),
         },
         selected
           ? React.createElement(BlockDetail, {
               block: selected,
               controller: props.controller,
               sessionId: props.sessionId,
+              t,
             })
           : null,
       )
     }
 
     function BlockDetail(props) {
-      const { block, controller, sessionId } = props
+      const { block, controller, sessionId, t } = props
       const [collapsed, setCollapsed] = React.useState(false)
       const [copied, setCopied] = React.useState(false)
       // Editable draft: lets the user edit the block's content in the detail
@@ -463,6 +597,7 @@ window.__ModuleLoader__.load({
         controller.select(sessionId, block.id) // toggles off (same id)
       }
 
+      const lineCount = block.lines.length
       return React.createElement(
         'div',
         { className: `dsh-pcb-detail${collapsed ? ' dsh-pcb-detail--collapsed' : ''}` },
@@ -470,25 +605,25 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dsh-pcb-head' },
           React.createElement('span', { className: 'dsh-pcb-lang' }, block.lang || 'text'),
-          React.createElement('span', { className: 'dsh-pcb-lines' }, `${block.lines.length} 行`),
+          React.createElement('span', { className: 'dsh-pcb-lines' }, t(lineCount === 1 ? 'lines.one' : 'lines.other', { count: lineCount })),
           React.createElement('span', { className: 'dsh-pcb-spacer' }),
           collapsed ? React.createElement('button', {
-            type: 'button', className: 'dsh-pcb-btn', title: '展开', 'aria-label': '展开',
+            type: 'button', className: 'dsh-pcb-btn', title: t('expand'), 'aria-label': t('expand'),
             onClick: () => setCollapsed(false),
           }, '▾') : React.createElement('button', {
-            type: 'button', className: 'dsh-pcb-btn', title: '折叠', 'aria-label': '折叠',
+            type: 'button', className: 'dsh-pcb-btn', title: t('collapse'), 'aria-label': t('collapse'),
             onClick: () => setCollapsed(true),
           }, '▸'),
           React.createElement('button', {
-            type: 'button', className: 'dsh-pcb-btn', title: '复制', 'aria-label': '复制',
+            type: 'button', className: 'dsh-pcb-btn', title: copied ? t('copied') : t('copy'), 'aria-label': t('copy'),
             onClick: copy,
           }, copied ? '✓' : '⎘'),
           React.createElement('button', {
-            type: 'button', className: 'dsh-pcb-btn', title: '收起', 'aria-label': '收起',
+            type: 'button', className: 'dsh-pcb-btn', title: t('hide'), 'aria-label': t('hide'),
             onClick: hide,
           }, '⟨'),
           React.createElement('button', {
-            type: 'button', className: 'dsh-pcb-btn dsh-pcb-btn--danger', title: '移除', 'aria-label': '移除',
+            type: 'button', className: 'dsh-pcb-btn dsh-pcb-btn--danger', title: t('remove'), 'aria-label': t('remove'),
             onClick: () => controller.remove(sessionId, block.id),
           }, '×'),
         ),
@@ -500,7 +635,7 @@ window.__ModuleLoader__.load({
               onChange: onEdit,
               spellCheck: false,
               rows: Math.min(Math.max(block.lines.length, 2), 12),
-              'aria-label': '编辑代码块内容',
+              'aria-label': t('edit.aria'),
             }),
       )
     }
@@ -524,8 +659,19 @@ window.__ModuleLoader__.load({
       }
       /* hide the "@" marker that DSH renders when the chip has no appearance glyph */
       [data-composer-chip="${SOURCE}"] > span > [aria-hidden="true"]{display:none!important}
-      /* the label text */
-      [data-composer-chip="${SOURCE}"] > span > span:last-child{font-weight:500!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      /* the label text (the trailing ✕ element is ours — never ellipsis it) */
+      [data-composer-chip="${SOURCE}"] > span > span:not(.${CHIP_X_CLASS}){font-weight:500!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+      /* --- per-chip ✕ delete button (element we own, appended inside the chip) --- */
+      .${CHIP_X_CLASS}{
+        box-sizing:border-box;flex:none;width:16px;height:16px;display:inline-grid;place-items:center;
+        margin-left:2px;border-radius:5px;font-size:13px;line-height:1;font-weight:600;
+        color:var(--dsw-alias-label-tertiary);cursor:pointer;user-select:none
+      }
+      .${CHIP_X_CLASS}:hover{
+        background:var(--dsw-alias-interactive-bg-hover-danger,rgba(224,49,49,.12));
+        color:var(--dsw-alias-state-error-primary,#e03131)
+      }
 
       /* --- dock / detail card above the input --- */
       .dsh-pcb-dock{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);margin:0 auto 6px;padding:0 var(--dsh-composer-side-clearance,16px);display:flex;flex-direction:column;gap:8px}
@@ -550,15 +696,108 @@ window.__ModuleLoader__.load({
         .dsh-pcb-head{height:34px}
         .dsh-pcb-lang{max-width:55%}
       }
+      @media (pointer:coarse){
+        .${CHIP_X_CLASS}{width:22px;height:22px;font-size:15px}
+      }
     `
 
     // ===== Client plugin body ===============================================
-    const inject = ['slots', 'sessions', 'conversation', 'inputTriggers']
+    const inject = ['slots', 'sessions', 'conversation', 'inputTriggers', 'locale']
 
     function apply(ctx) {
       try { console.log('[dsh-paste-code-block] client loaded') } catch (e) { /* noop */ }
-      const controller = new BlockController(ctx)
+
+      // Publish our dictionaries under the plugin namespace, then bind a
+      // translator that always reflects the ACTIVE DSH language (Settings →
+      // Language, or its browser fallback). Outside a composition that carries
+      // the locale plugin we degrade to a browser-language guess.
+      if (ctx.locale && typeof ctx.locale.register === 'function') {
+        ctx.effect(() => ctx.locale.register(NS, L10N), 'paste-code-block: dictionaries')
+      }
+      const t = (ctx.locale && typeof ctx.locale.bind === 'function')
+        ? ctx.locale.bind(NS)
+        : createT(detectBrowserLocale())
+
+      const controller = new BlockController(ctx, t)
       ctx.effect(() => () => controller.dispose(), 'paste-code-block: state')
+
+      // ----- chip DOM sync: localized labels + per-chip ✕ delete button -----
+      function chipInner(host) { return host.querySelector(':scope > span') }
+      function chipLabelText(host) {
+        const inner = chipInner(host)
+        if (!inner) return ''
+        const title = inner.getAttribute('title')
+        if (title) return title
+        const spans = [...inner.querySelectorAll(':scope > span')].filter((s) => !s.classList.contains(CHIP_X_CLASS))
+        const labelEl = spans[spans.length - 1]
+        return (labelEl && labelEl.textContent) || inner.textContent || ''
+      }
+
+      function scanChips() {
+        if (typeof document === 'undefined') return
+        if (controller.list.size === 0) return
+        const hosts = document.querySelectorAll(`[data-composer-chip="${SOURCE}"]`)
+        for (const host of hosts) {
+          const inner = chipInner(host)
+          if (!inner) continue
+          const parsed = parseBlockLabel(inner.getAttribute('title') || '') || parseBlockLabel(chipLabelText(host))
+          if (!parsed) continue
+          const seat = host.closest(`[${MARK_SESSION}]`)
+          const sid = seat && seat.getAttribute(MARK_SESSION)
+          if (!sid) continue
+          const block = controller.listFor(sid).find((b) => b.type === parsed.type && b.labelNumber === parsed.n)
+          if (!block) continue
+          // Retitle the chip to the current language. Lexical caches the
+          // insert-time label inside the node, so on a Settings → Language
+          // switch (or a chip that remounted with the old label) the DOM is
+          // the sync surface; React's own diff never touches these nodes
+          // again while the node state is unchanged.
+          if (inner.getAttribute('title') !== block.label) {
+            inner.setAttribute('title', block.label)
+            const spans = [...inner.querySelectorAll(':scope > span')].filter((s) => !s.classList.contains(CHIP_X_CLASS))
+            const labelEl = spans[spans.length - 1]
+            if (labelEl && labelEl.textContent !== block.label) labelEl.textContent = block.label
+          }
+          // Ensure the ✕ delete affordance exists on this chip.
+          let x = inner.querySelector(`:scope > .${CHIP_X_CLASS}`)
+          if (!x) {
+            x = document.createElement('span')
+            x.className = CHIP_X_CLASS
+            x.textContent = '×'
+            x.setAttribute('role', 'button')
+            x.setAttribute('tabindex', '-1')
+            inner.appendChild(x)
+          }
+          const tip = t('remove')
+          if (x.getAttribute('aria-label') !== tip) {
+            x.setAttribute('aria-label', tip)
+            x.setAttribute('title', tip)
+          }
+        }
+      }
+
+      let scanScheduled = 0
+      function scheduleScan() {
+        if (scanScheduled) return
+        const run = () => { scanScheduled = 0; scanChips() }
+        scanScheduled = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16)
+      }
+
+      ctx.effect(() => {
+        if (typeof MutationObserver === 'undefined' || !document.body) return undefined
+        const mo = new MutationObserver(scheduleScan)
+        mo.observe(document.body, { childList: true, subtree: true })
+        return () => mo.disconnect()
+      }, 'paste-code-block: chip sync observer')
+
+      // A locale switch (or a late dictionary registration bumps the revision
+      // too) re-derives labels: controller state first, chip DOM second.
+      ctx.effect(() => {
+        const face = ctx.locale
+        if (!face || typeof face.subscribe !== 'function') return undefined
+        return face.subscribe(() => { controller.retitleAll(); scheduleScan() })
+      }, 'paste-code-block: locale sync')
+      scheduleScan() // late-mount safety for chips rendered before plugin boot
 
       ctx.effect(() => ctx.inputTriggers.registerSource({
         trigger: '@',
@@ -635,18 +874,32 @@ window.__ModuleLoader__.load({
         return () => document.removeEventListener('paste', onPaste, true)
       }, 'paste-code-block: paste capture')
 
-      // Clicking an inline chip toggles its detail card.
+      // Chip interactions: ✕ deletes the block, a body click toggles its card;
+      // any other click dismisses the open card.
       const onChipPointer = (ev) => {
         const target = ev.target
         if (!(target instanceof Element)) return
-        // Clicking a chip toggles its detail card.
+        // ✕ on a chip: remove that block outright.
+        const chipX = target.closest(`.${CHIP_X_CLASS}`)
+        if (chipX) {
+          const xHost = chipX.closest(`[data-composer-chip="${SOURCE}"]`)
+          const xSid = xHost && sessionFor(xHost)
+          const label = xHost ? chipLabelText(xHost) : ''
+          const block = xSid && label ? controller.blockForLabel(xSid, label) : null
+          if (block) {
+            ev.preventDefault()
+            ev.stopPropagation()
+            controller.remove(xSid, block.id)
+          }
+          return
+        }
+        // Clicking a chip body toggles its detail card.
         const host = target.closest(`[data-composer-chip="${SOURCE}"]`)
         if (host) {
-          const labelEl = host.querySelector(':scope > span[title]') || host.querySelector('span[title]')
-          const label = labelEl && labelEl.getAttribute('title')
+          const label = chipLabelText(host)
           const sid = sessionFor(target)
           if (!sid || !label) return
-          const block = controller.blockForLabel(label)
+          const block = controller.blockForLabel(sid, label)
           if (!block) return
           ev.preventDefault()
           ev.stopPropagation()
@@ -670,8 +923,11 @@ window.__ModuleLoader__.load({
         name: 'conversation.input.dock',
         id: DETAIL_NS,
         order: 90,
-        label: '粘贴代码块详情',
-      }, (props) => React.createElement(BlockDock, { ...props, controller })))
+        label: t('slot.label'),
+        // Declaring the locale namespace gives the dock a fresh `t` seat prop
+        // and re-renders it automatically on every Settings → Language switch.
+        locale: NS,
+      }, (props) => React.createElement(BlockDock, { ...props, controller, syncChips: scheduleScan })))
     }
 
     exports.apply = apply

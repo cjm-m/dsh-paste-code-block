@@ -4,72 +4,94 @@
 
 **Cherry Studio‑style text/code block pasting for DeepSeek Harness Web**
 
-Paste text/code into the DSH Web composer → it collapses into a **bordered, collapsible, language-tagged card** instead of a long flat string; on send it restores the original content as a fenced code block.
+Paste long code or text into the DSH Web composer → it lands as a **bordered, collapsible, language‑tagged card** instead of a wall of text. Names follow the DSH interface language (中文 / English). On send, the original content is restored as a fenced code block.
 
-`type: module` · `runtime: host` · `client: web` · MIT
+[![npm version](https://img.shields.io/npm/v/dsh-paste-code-block?logo=npm)](https://www.npmjs.com/package/dsh-paste-code-block)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![platform: web](https://img.shields.io/badge/platform-DSH%20Web-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 
-**[中文](./README.zh-CN.md) | English**
+**English | [简体中文](./README.zh-CN.md)**
 
 </div>
 
----
+![Preview — pasted blocks become tidy cards](./docs/images/hero.png)
+
+## Why
+
+Copying a 200‑line stack trace, an API response, or a long log into a chat input turns the composer into an unreadable blob. This plugin folds any qualifying paste into a **chip** (built on DSH's own hidden‑reference mechanism, the same one file uploads use) plus an **editing detail card** — the draft stays clean, and the content stays fully editable and restorable.
 
 ## Features
 
-- 📋 **Smart detection** — pasted content with ``` fences, newlines, or long indented code becomes a card; ordinary short prose pastes as-is.
-- 🏷️ **Language tags** — auto-detects Python / JS / JSON / YAML / SQL / bash / HTML·XML / C++ / Go / Ruby (incl. shebang). Plain text blocks are tagged `text`.
-- 📂 **Collapsible card** — collapsed by default showing a one-line preview; click to expand full code (scrollable, up to 260px).
-- ✏️ **In‑card editing** — edit the block content right in the detail card; the send path uses your edited text.
-- 📤 **Restore on send** — each card is restored to a ```` ```lang … ``` ```` fenced block; a failed send auto-fills it back into the input.
-- 🔢 **Smart numbering** — code and text are counted apart; deleting a block frees its number for reuse (smallest-free allocation).
-- 📱 **All surfaces** — pure client plugin; works on PC & mobile Web, adapts to light/dark themes.
+- 🧩 **Auto block detection** — pasted text with ``` fences, newlines, heavy indentation, or length ≥ 96 becomes a card; ordinary short prose pastes through untouched.
+- 🏷️ **Language tags** — auto-detects Python / JS / JSON / YAML / SQL / bash / HTML·XML / C++ / Go / Ruby (incl. shebangs); plain-text blocks are tagged `text`.
+- ✏️ **In-card editing** — edit the content right in the detail card; the edited text is exactly what gets sent. Plus copy, collapse/expand, and hide.
+- 🈯 **Localized names** — chips are named in the current DSH language: `复制代码块1` / `Code block #1`, `复制文本块N` / `Text block #N`. Switching **Settings → Language** live-retitles every chip.
+- × **One-click remove** — every chip carries its own `×` delete button (the detail card has one too); a removed number is recycled immediately.
+- 📤 **Fenced restore on send** — each card expands back into a ```` ```lang … ``` ```` block when you send; a failed send automatically refills the input.
+- 🔢 **Smart numbering** — code and text count apart; the smallest free number is always reused.
+- 📱 **Every surface** — pure client plugin; works on desktop & mobile web, follows light/dark themes.
+
+## How it works
+
+![Four steps: copy · paste · tidy · send](./docs/images/workflow.png)
+
+## Localization
+
+Chip labels, tooltips, line counts, and the send-time error notice all render through the official DSH locale service: the plugin registers a `paste-code-block` dictionary namespace with complete **zh / en** key sets, and its composer dock declares that namespace, so everything re-renders on every language switch.
+
+![Block names follow the UI language](./docs/images/languages.png)
+
+- **New pastes** are named in whatever language is active at paste time.
+- **Existing chips** are re-titled live when you flip 设置 → 语言 / Settings → Language — no reload needed.
+- Clicks and deletes match chips **across languages**: a `复制代码块2` chip still resolves to its block after switching to English (where it now reads `Code block #2`), and vice versa.
 
 ## Install
 
-Requires DSH `0.1.x` (current developer preview — APIs may change).
-
-Published on **npm** — install directly by name:
+Requires DSH `0.1.x` (developer preview — APIs may change). Published on **npm** — install by name:
 
 ```sh
 dsh plugin --profile web add dsh-paste-code-block
 ```
 
-Alternatively, install from this Git repository or a local folder:
+Or from this repository / a local checkout:
 
 ```sh
-# From GitHub
-dsh plugin --profile web add github:cjm-m/dsh-paste-code-block
-
-# From a local checkout
-dsh plugin --profile web add file:/path/to/dsh-paste-code-block
+dsh plugin --profile web add github:cjm-m/dsh-paste-code-block   # from GitHub
+dsh plugin --profile web add file:/path/to/dsh-paste-code-block  # from a local folder
 ```
 
 **Restart `dsh web`** after installing.
 
 ## Usage
 
-1. Copy a block of code or a multi-line block of text anywhere.
-2. Paste it into the DSH input → it becomes a code-block card.
-3. Expand / copy / edit / remove as you like; press Enter or send and it's restored as a fenced code block.
+1. Copy any code or multi-line text from anywhere.
+2. Paste into the DSH input → it collapses into a chip such as `复制代码块1` / `Code block #1`.
+3. Click the chip to open the card: read, edit inline, copy, collapse. Click the chip's (or the card's) `×` to delete that block.
+4. Send — the full original text goes out as a proper fenced code block.
+
+Detection threshold: **contains a newline / ≥ 2 lines / length ≥ 96 / indented & brace-dense / fenced** — any one turns the paste into a block.
 
 ## Notes & boundaries
 
-- Blocks are **appended at the end of the draft** (reusing DSH's hidden-reference semantics), keeping cursor/undo stable; ordinary short text is not intercepted.
-- Plain-text blocks are wrapped in ```` ```text ``` ```` on send so they don't smear into one line.
-- Detection threshold: **contains newline / ≥2 lines / length ≥96 / indented or fenced** — any one triggers the card.
+- Blocks are **appended at the end of the draft** (reusing DSH's hidden-reference semantics), which keeps cursor/undo stable.
+- Plain-text blocks are sent wrapped in ```` ```text ``` ```` so they never smear into one line.
+- Removing a chip any other way (e.g. `Backspace`) also frees its number — plugin state is reconciled against the editor continuously.
 
 ## Project layout
 
 ```
 dsh-paste-code-block/
 ├── src/
-│   ├── client.js       # Web (browser) half — paste capture, chip styling, detail card
+│   ├── client.js       # Web (browser) half — paste capture, chips, detail card, × delete
 │   ├── index.js        # Host (node) half — intentionally empty (pure UI plugin)
-│   └── parse.js        # Pure block-parsing logic (canonical, unit-tested)
+│   ├── parse.js        # Pure block-detection logic (canonical, unit-tested)
+│   └── i18n.js         # Locale dictionaries + label parsing (canonical, unit-tested)
 ├── tests/
-│   └── parse.test.js   # node:test unit tests for src/parse.js
+│   ├── parse.test.js   # node:test unit tests for src/parse.js
+│   └── i18n.test.js    # node:test unit tests for src/i18n.js
 ├── docs/
-│   └── design.md       # Design rationale (numbering, anchor stability, codec)
+│   ├── design.md       # Design rationale (numbering, anchors, codec, i18n, chip ×)
+│   └── images/         # README mockups (PNG + editable SVG sources)
 ├── cordis.patch.yml    # DSH bundle patch declaring the host plugin
 ├── package.json        # Package + DSH plugin manifest
 ├── README.md           # English
@@ -79,8 +101,10 @@ dsh-paste-code-block/
 ## Development
 
 ```sh
-npm run check   # syntax-check both JS halves
-npm test        # run the unit tests (node:test)
+npm run check   # syntax-check the JS halves
+npm test        # run unit tests (node:test, 22 tests)
 ```
+
+## License
 
 MIT — see [LICENSE](./LICENSE).
