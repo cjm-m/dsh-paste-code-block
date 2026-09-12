@@ -357,19 +357,57 @@ window.__ModuleLoader__.load({
         this.publish(sessionId)
       }
 
+      /**
+       * Surgically remove the chip node(s) for one ref from the composer editor.
+       *
+       * NEVER splice the draft via `setDraft()` to delete a chip: setDraft
+       * clears the root and re-creates plain-text paragraphs, and chips are
+       * Lexical decorator nodes that cannot round-trip through text — so one
+       * "spliced out" chip meant EVERY block vanished (0.1.1 bug). Instead we
+       * locate the ReferenceChipNode(s) by their public getSource()/getReference()
+       * accessors and call the node's own remove() inside one discrete update.
+       *
+       * @param shell - the session's input shell (exposes `.editor`).
+       * @param ref - the block id to remove.
+       * @returns true if the editor processed the removal (including "chip was
+       *   already gone" — bookkeeping may proceed); false when the editor was
+       *   unreachable/errored and the caller must NOT prune its state.
+       */
+      removeChipNodes(shell, ref) {
+        const editor = shell && shell.editor
+        if (!editor || typeof editor.update !== 'function') return false
+        try {
+          editor.update(() => {
+            const map = editor.getEditorState() && editor.getEditorState()._nodeMap
+            if (!map || typeof map.values !== 'function') return
+            const hits = []
+            for (const entry of map.values()) {
+              const node = entry && entry.node
+              if (node && typeof node.getSource === 'function' && typeof node.getReference === 'function'
+                && node.getSource() === SOURCE && node.getReference() === ref) hits.push(node)
+            }
+            for (const node of hits) node.remove()
+          }, { discrete: true })
+          return true
+        } catch (err) {
+          console.warn('[paste-code-block] chip node removal failed:', err)
+          return false
+        }
+      }
+
       remove(sessionId, ref) {
         const k = String(sessionId)
         const entries = this.listFor(k)
         const entry = entries.find((b) => b.id === ref)
         if (!entry) return
-        if (this.selected.get(k) === ref) this.selected.delete(k)
         const { shell } = this.scope(sessionId)
-        const input = shell.snapshot
-        const occurrence = (input.occurrences || []).find((o) => o.source === SOURCE && o.ref === ref)
-        if (occurrence) {
-          shell.setDraft(input.draft.slice(0, occurrence.offset) + input.draft.slice(occurrence.offset + 1))
-        }
-        const next = entries.filter((b) => b.id !== ref)
+        // If the editor itself removed the chip, the synchronous update may
+        // have already reconciled this block away — re-check before proceeding.
+        if (!this.removeChipNodes(shell, ref)) return
+        const stillListed = this.listFor(k)
+        if (!stillListed.includes(entry)) return
+        if (this.selected.get(k) === ref) this.selected.delete(k)
+        const next = stillListed.filter((b) => b.id !== ref)
         if (next.length > 0) this.list.set(k, next)
         else this.list.delete(k)
         this.refIndex.delete(ref)

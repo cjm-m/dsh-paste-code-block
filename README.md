@@ -76,6 +76,7 @@ Detection threshold: **contains a newline / ≥ 2 lines / length ≥ 96 / indent
 - Blocks are **appended at the end of the draft** (reusing DSH's hidden-reference semantics), which keeps cursor/undo stable.
 - Plain-text blocks are sent wrapped in ```` ```text ``` ```` so they never smear into one line.
 - Removing a chip any other way (e.g. `Backspace`) also frees its number — plugin state is reconciled against the editor continuously.
+- Deleting one block never touches the others, and removal is an ordinary editor edit — `Ctrl+Z` brings it back.
 
 ## Project layout
 

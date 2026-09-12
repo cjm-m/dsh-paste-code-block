@@ -132,6 +132,17 @@ them. Instead the plugin **appends a `<span class="dsh-pcb-chip-x">×</span>` in
 inner element** and keeps them present with a `MutationObserver` on `document.body`
 (rAF-coalesced; the scan exits immediately when no block is tracked). A capture-phase
 `pointerdown` handler checks `.dsh-pcb-chip-x` **before** the toggle logic and calls
-`controller.remove`, which splices the chip out of the draft and frees its number. If the chip
-is not backed by a tracked block (e.g. a restored draft after redraw), no ✕ is added — no dead
-affordances. Touch targets grow on coarse pointers (`@media (pointer:coarse)`).
+`controller.remove`, which removes **just that chip's Lexical node** and frees its number. If
+the chip is not backed by a tracked block (e.g. a restored draft after redraw), no ✕ is added —
+no dead affordances. Touch targets grow on coarse pointers (`@media (pointer:coarse)`).
+
+**Why node-level removal matters — the 0.1.1 incident.** The first `remove()` implementation
+spliced the chip's placeholder char out of the draft string and wrote the result through
+`shell.setDraft()`. But `setDraft` **clears the editor root and rebuilds plain-text
+paragraphs** — chips are decorator nodes that cannot round-trip through text, so deleting one
+block destroyed *every* chip in the draft. `removeChipNodes()` instead scans the pending
+state's node map for `ReferenceChipNode`s whose public `getSource()`/`getReference()` match
+this plugin and the block's ref, and calls the node's own `remove()` inside one discrete
+update — a surgical, undoable (`Ctrl+Z`) deletion that leaves sibling chips untouched. If the
+editor is unreachable or the update throws, the block is *kept* rather than falling back to
+`setDraft`; state that diverges from the editor self-heals via `reconcile` anyway.
