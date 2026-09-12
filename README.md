@@ -77,6 +77,7 @@ Detection threshold: **contains a newline / ≥ 2 lines / length ≥ 96 / indent
 - Plain-text blocks are sent wrapped in ```` ```text ``` ```` so they never smear into one line.
 - Removing a chip any other way (e.g. `Backspace`) also frees its number — plugin state is reconciled against the editor continuously.
 - Deleting one block never touches the others, and removal is an ordinary editor edit — `Ctrl+Z` brings it back.
+- Creating a block leaves **no stray space**: DSH appends a separating space after a freshly inserted chip, and the plugin removes exactly that one character, so text typed after a block does not start with a space and pasting several blocks never piles spaces into the message. Spaces you typed yourself are never touched by pasting or deleting.
 
 ## Project layout
 
@@ -103,7 +104,7 @@ dsh-paste-code-block/
 
 ```sh
 npm run check   # syntax-check the JS halves
-npm test        # run unit tests (node:test, 30 tests)
+npm test        # run unit tests (node:test, 38 tests)
 ```
 
 ## License

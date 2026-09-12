@@ -166,3 +166,31 @@ cross-check — so a block is pruned only once its chip is verifiably gone. If t
 the attempt the block stays tracked and the composer surfaces `error.remove`; the old
 `setDraft` fallback is gone for good. State that diverges from the editor still self-heals via
 `reconcile`.
+
+## 11. Insertion leaves no stray space
+
+`SessionInputShell.insertReference` inserts `[chip, ' ']` — a separating space — whenever the
+character at the pick-time span is not itself a space. Because a block is always appended at
+the **end** of the draft, that condition is always true, so every paste used to leave a space
+behind: text typed next started with a space (the visible "prefix space"), and pasting several
+blocks piled stray spaces into the message body.
+
+Two rules keep the draft clean without ever touching user whitespace:
+
+1. **Insert, then drop exactly the appended character.** `dropSeparatorSpace()` asks
+   `separatorSpaceSpan()` (src/projection.js) for the detect span of the character directly
+   after *our* chip and deletes it with the same public `slash/input-insert-text` verb DSH uses
+   for its own span edits. Since the chip is inserted at the end, that character can only have
+   come from the insertion itself — a trailing space the user had already typed still sits
+   before the chip, untouched. The span is only used when the projection shows a space right
+   after this block's chip, and a failure to apply just logs (the draft keeps DSH's behaviour).
+2. **Delete removes the chip node only.** `remove()` drops the chip's Lexical node
+   (§10) and never rewrites text, so spaces around a deleted block survive exactly as they were.
+
+`src/projection.js` owns the coordinate conversion this needs: the published `draft` is the
+clipboard projection (a chip occupies `occurrence.length` characters, i.e. one zero-width space
+for us) while the scoped edit verbs address detect coordinates (a chip collapses to exactly one
+placeholder character). `detectOffsetOf()` converts with
+`detect = clipboard - Σ(len_i - 1)` over preceding occurrences, so blocks stay correctly
+addressed even when other plugins' chips (file references and the like) sit in the same draft.
+Both helpers are pure and unit-tested (8 cases in tests/projection.test.js).

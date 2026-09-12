@@ -68,6 +68,28 @@ window.__ModuleLoader__.load({
       return hits
     }
 
+    // ----- projection geometry (embedded copy of src/projection.js) ----------
+    // The shell publishes clipboard coordinates (`draft`, chips expanded to their
+    // clipboardText) while the scoped edit verbs address detect coordinates
+    // (each chip collapses to ONE placeholder char). Convert before editing.
+    function detectOffsetOf(occurrences, occ) {
+      let shift = 0
+      for (const other of occurrences || []) {
+        if (other === occ || other.offset >= occ.offset) continue
+        shift += Math.max(0, (other.length || 1) - 1)
+      }
+      return occ.offset - shift
+    }
+    // Detect span of the separator space the shell appends after a fresh chip.
+    function separatorSpaceSpan(projection, occ) {
+      if (!projection || !occ) return null
+      const draft = projection.draft || ''
+      const afterChip = occ.offset + (occ.length || 0)
+      if (draft.charAt(afterChip) !== ' ') return null
+      const start = detectOffsetOf(projection.occurrences, occ) + 1
+      return { start, end: start + 1 }
+    }
+
     // ===== Locale (embedded copy of src/i18n.js — keep the two in sync) =====
     const NS = 'paste-code-block'
     const L10N = {
@@ -352,7 +374,7 @@ window.__ModuleLoader__.load({
         // only a block is pasted with no typed text). Hence draft.length already
         // equals the detect length; anchoring there keeps blocks strictly ordered.
         const end = input.draft ? input.draft.length : 0
-        return actx.bail(actx, 'slash/input-insert-reference', {
+        const inserted = actx.bail(actx, 'slash/input-insert-reference', {
           reference: {
             source: SOURCE,
             ref: block.id,
@@ -361,6 +383,40 @@ window.__ModuleLoader__.load({
           },
           span: { start: end, end, draftRev: input.draftRev },
         }) === true
+        if (!inserted) return false
+        // The shell appends a separating space after the chip; creating a block
+        // must not prefix the following text (or pile spaces into the draft).
+        this.dropSeparatorSpace(actx, shell, block)
+        return true
+      }
+
+      /**
+       * Remove the separating space the shell appended after OUR freshly inserted
+       * chip, and nothing else.
+       *
+       * `SessionInputShell.insertReference` inserts `[chip, ' ']` whenever the
+       * character at the pick-time span is not itself a space. Blocks are always
+       * appended at the end of the draft, so the character now sitting directly
+       * after our chip can only have come from that insertion: deleting it can
+       * never disturb a space the draft already had (a pre-existing trailing
+       * space still sits where the user left it, before the chip).
+       *
+       * @param actx - session scope (scoped edit events).
+       * @param shell - the session's input shell.
+       * @param block - the block whose chip was just inserted.
+       * @returns whether the space was removed.
+       */
+      dropSeparatorSpace(actx, shell, block) {
+        const after = shell.snapshot
+        const occ = after && (after.occurrences || []).find((o) => o.source === SOURCE && o.ref === block.id)
+        const span = separatorSpaceSpan(after, occ)
+        if (!span) return false
+        const removed = actx.bail(actx, 'slash/input-insert-text', {
+          text: '',
+          span: { start: span.start, end: span.end, draftRev: after.draftRev },
+        }) === true
+        if (!removed) console.warn('[paste-code-block] could not drop the separator space')
+        return removed
       }
 
       attach(sessionId, block) {
