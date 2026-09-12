@@ -140,9 +140,29 @@ no dead affordances. Touch targets grow on coarse pointers (`@media (pointer:coa
 spliced the chip's placeholder char out of the draft string and wrote the result through
 `shell.setDraft()`. But `setDraft` **clears the editor root and rebuilds plain-text
 paragraphs** — chips are decorator nodes that cannot round-trip through text, so deleting one
-block destroyed *every* chip in the draft. `removeChipNodes()` instead scans the pending
-state's node map for `ReferenceChipNode`s whose public `getSource()`/`getReference()` match
-this plugin and the block's ref, and calls the node's own `remove()` inside one discrete
-update — a surgical, undoable (`Ctrl+Z`) deletion that leaves sibling chips untouched. If the
-editor is unreachable or the update throws, the block is *kept* rather than falling back to
-`setDraft`; state that diverges from the editor self-heals via `reconcile` anyway.
+block destroyed *every* chip in the draft. `removeChipNodes()` instead scans the editor's node
+map for `ReferenceChipNode`s whose public `getSource()`/`getReference()` match this plugin and
+the block's ref, and calls the node's own `remove()` inside one discrete update — a surgical,
+undoable (`Ctrl+Z`) deletion that leaves sibling chips untouched.
+
+**The 0.1.2 silent no-op.** The node map (`editor.getEditorState()._nodeMap`) is keyed by
+NodeKey and **its values are the nodes themselves**; the older `NodeState` wrapper with a
+`.node` field no longer exists. Reading `value.node` therefore matched *nothing* for every
+entry, `removeChipNodes()` removed zero chips, yet the call looked successful — the block's
+state was pruned behind a chip that was still in the draft, so clicking ✕ appeared to do
+nothing at all. `src/chip-nodes.js` now normalizes both shapes (`chipNodeOf`) and is unit
+tested for exactly this rule; `tests/lexical-chip-probe.mjs` reproduces the original defect
+against real `lexical@0.49.0`:
+
+```
+_nodeMap value shape:      valueIsNode=true, hasNodeProp=false
+OLD code (value.node):     removed = 0 | chips after = r1,r2,r3   <- silent no-op
+NEW code (value is node):  removed = 1 | chips after = r1,r3      <- only the target
+```
+
+**Failure is never silent and never destructive.** `remove()` gates every state change on
+`chipPresent()` — the editor's node map first, the published occurrence projection as a
+cross-check — so a block is pruned only once its chip is verifiably gone. If the chip survives
+the attempt the block stays tracked and the composer surfaces `error.remove`; the old
+`setDraft` fallback is gone for good. State that diverges from the editor still self-heals via
+`reconcile`.

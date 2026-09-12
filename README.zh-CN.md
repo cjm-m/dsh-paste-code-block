@@ -103,7 +103,7 @@ dsh-paste-code-block/
 
 ```sh
 npm run check   # 语法检查 JS 半端
-npm test        # 运行单元测试（node:test，22 项）
+npm test        # 运行单元测试（node:test，30 项）
 ```
 
 ## License

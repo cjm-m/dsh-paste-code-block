@@ -103,7 +103,7 @@ dsh-paste-code-block/
 
 ```sh
 npm run check   # syntax-check the JS halves
-npm test        # run unit tests (node:test, 22 tests)
+npm test        # run unit tests (node:test, 30 tests)
 ```
 
 ## License

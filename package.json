@@ -29,6 +29,7 @@
     "./client": "./src/client.js",
     "./parse": "./src/parse.js",
     "./i18n": "./src/i18n.js",
+    "./chip-nodes": "./src/chip-nodes.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -73,7 +74,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/i18n.js && node --check src/client.js",
+    "check": "node --check src/index.js && node --check src/i18n.js && node --check src/chip-nodes.js && node --check src/client.js",
     "test": "node --test 'tests/**/*.test.js'"
   }
 }

@@ -17,6 +17,57 @@ window.__ModuleLoader__.load({
     const DETAIL_NS = 'dsh-pcb-detail'
     const CHIP_X_CLASS = 'dsh-pcb-chip-x'
 
+    // ----- shared chip-DOM helpers ------------------------------------------
+    // Module level on purpose: the chip sync scan and the controller's removal
+    // path both need to map a chip host element back to its label (and its
+    // session), and the ✕ is appended INSIDE the chip's inner span.
+    function chipInner(host) { return host.querySelector(':scope > span') }
+    function chipLabelText(host) {
+      const inner = chipInner(host)
+      if (!inner) return ''
+      const title = inner.getAttribute('title')
+      if (title) return title
+      const spans = [...inner.querySelectorAll(':scope > span')].filter((s) => !s.classList.contains(CHIP_X_CLASS))
+      const labelEl = spans[spans.length - 1]
+      return (labelEl && labelEl.textContent) || inner.textContent || ''
+    }
+    // Resolve the active session for an element inside a composer seat.
+    function sessionFor(target) {
+      const seat = target.closest(`[${MARK}]`)
+      let sid = seat && seat.getAttribute(MARK_SESSION)
+      if (!sid && target.parentElement) {
+        let el = target.parentElement
+        while (el) {
+          const rail = el.querySelector && el.querySelector('[data-dsh-pcb-rail]')
+          if (rail) { sid = rail.getAttribute('data-dsh-pcb-session') || sid; break }
+          el = el.parentElement
+        }
+      }
+      return sid
+    }
+
+    // ----- chip node-map helpers (embedded copy of src/chip-nodes.js) --------
+    // DSH renders each pasted block as a Lexical decorator chip and the input
+    // shell exposes no per-reference delete verb, so removal walks the editor's
+    // node map. Its VALUES ARE THE NODES THEMSELVES (Lexical >= 0.21): reading
+    // `value.node` matches nothing and silently deletes nothing (v0.1.2 bug).
+    function chipNodeOf(value) {
+      if (!value) return null
+      if (typeof value.getSource === 'function') return value
+      const wrapped = value.node
+      return wrapped && typeof wrapped.getSource === 'function' ? wrapped : null
+    }
+    function collectChipNodes(values, source, ref) {
+      const hits = []
+      if (!values) return hits
+      for (const value of values) {
+        const node = chipNodeOf(value)
+        if (!node || typeof node.getReference !== 'function') continue
+        if (node.getSource() === source && node.getReference() === ref) hits.push(node)
+      }
+      return hits
+    }
+
     // ===== Locale (embedded copy of src/i18n.js — keep the two in sync) =====
     const NS = 'paste-code-block'
     const L10N = {
@@ -35,6 +86,7 @@ window.__ModuleLoader__.load({
         'remove': '移除',
         'edit.aria': '编辑代码块内容',
         'error.stale': '代码块已失效，请重新粘贴',
+        'error.remove': '无法删除该块，请重试',
       },
       en: {
         'block.code': 'Code block #{n}',
@@ -51,6 +103,7 @@ window.__ModuleLoader__.load({
         'remove': 'Remove',
         'edit.aria': 'Edit block content',
         'error.stale': 'This block is no longer valid — paste it again',
+        'error.remove': 'Could not remove the block — please retry',
       },
     }
 
@@ -357,56 +410,96 @@ window.__ModuleLoader__.load({
         this.publish(sessionId)
       }
 
+      /** Whether the editor's own node map still holds a chip for this ref. */
+      hasChipNode(shell, ref) {
+        const editor = shell && shell.editor
+        if (!editor || typeof editor.getEditorState !== 'function') return false
+        const state = editor.getEditorState()
+        if (!state || typeof state.read !== 'function') return false
+        let found = false
+        state.read(() => {
+          const map = state._nodeMap
+          if (map && typeof map.values === 'function') found = collectChipNodes(map.values(), SOURCE, ref).length > 0
+        })
+        return found
+      }
+
+      /** Whether the editor still projects an occurrence (chip) for this ref. */
+      hasChip(shell, ref) {
+        const input = shell && shell.snapshot
+        if (!input) return false
+        return (input.occurrences || []).some((o) => o.source === SOURCE && o.ref === ref)
+      }
+
+      /** Whether a chip for this ref is still present (editor first, then projection). */
+      chipPresent(shell, ref) {
+        return this.hasChipNode(shell, ref) || this.hasChip(shell, ref)
+      }
+
       /**
-       * Surgically remove the chip node(s) for one ref from the composer editor.
+       * Remove the chip node(s) of one ref from the editor's own document.
        *
-       * NEVER splice the draft via `setDraft()` to delete a chip: setDraft
-       * clears the root and re-creates plain-text paragraphs, and chips are
-       * Lexical decorator nodes that cannot round-trip through text — so one
-       * "spliced out" chip meant EVERY block vanished (0.1.1 bug). Instead we
-       * locate the ReferenceChipNode(s) by their public getSource()/getReference()
-       * accessors and call the node's own remove() inside one discrete update.
+       * NEVER splice the draft via `setDraft()` to delete a chip: setDraft clears
+       * the root and re-creates plain-text paragraphs, and chips are Lexical
+       * decorator nodes that cannot round-trip through text — so one "spliced
+       * out" chip meant EVERY block vanished (0.1.1 bug).
+       *
+       * The editor exposes no per-reference delete verb, so we walk its node map
+       * and drop the ReferenceChipNode(s) carrying this source + ref — the same
+       * `node.remove()` the editor itself performs when a chip is deleted by hand.
        *
        * @param shell - the session's input shell (exposes `.editor`).
        * @param ref - the block id to remove.
-       * @returns true if the editor processed the removal (including "chip was
-       *   already gone" — bookkeeping may proceed); false when the editor was
-       *   unreachable/errored and the caller must NOT prune its state.
+       * @returns number of nodes removed, or -1 when the editor was unreachable.
        */
       removeChipNodes(shell, ref) {
         const editor = shell && shell.editor
-        if (!editor || typeof editor.update !== 'function') return false
+        if (!editor || typeof editor.update !== 'function') return -1
+        let removed = 0
         try {
           editor.update(() => {
-            const map = editor.getEditorState() && editor.getEditorState()._nodeMap
+            const state = editor.getEditorState()
+            const map = state ? state._nodeMap : null
             if (!map || typeof map.values !== 'function') return
-            const hits = []
-            for (const entry of map.values()) {
-              const node = entry && entry.node
-              if (node && typeof node.getSource === 'function' && typeof node.getReference === 'function'
-                && node.getSource() === SOURCE && node.getReference() === ref) hits.push(node)
-            }
+            const hits = collectChipNodes(map.values(), SOURCE, ref)
             for (const node of hits) node.remove()
+            removed = hits.length
           }, { discrete: true })
-          return true
         } catch (err) {
           console.warn('[paste-code-block] chip node removal failed:', err)
-          return false
+          return -1
         }
+        return removed
       }
 
+      /**
+       * Delete one block: drop its chip from the composer, then its state.
+       *
+       * The chip removal is VERIFIED against the editor's own node map (and, as a
+       * cross-check, the published occurrence projection): if the chip is still
+       * there we keep the block and surface an error rather than silently doing
+       * nothing (or, worse, pruning state behind a chip that is still there).
+       *
+       * @param sessionId - owning session.
+       * @param ref - block id.
+       */
       remove(sessionId, ref) {
         const k = String(sessionId)
         const entries = this.listFor(k)
         const entry = entries.find((b) => b.id === ref)
         if (!entry) return
         const { shell } = this.scope(sessionId)
-        // If the editor itself removed the chip, the synchronous update may
-        // have already reconciled this block away — re-check before proceeding.
-        if (!this.removeChipNodes(shell, ref)) return
+        if (this.chipPresent(shell, ref)) {
+          const removed = this.removeChipNodes(shell, ref)
+          if (this.chipPresent(shell, ref)) {
+            console.warn('[paste-code-block] could not remove chip', { ref, removed })
+            shell.notify('error', this.t('error.remove'))
+            return
+          }
+        }
+        if (this.selected.get(k) === ref) this.selected.delete(k)
         const stillListed = this.listFor(k)
         if (!stillListed.includes(entry)) return
-        if (this.selected.get(k) === ref) this.selected.delete(k)
         const next = stillListed.filter((b) => b.id !== ref)
         if (next.length > 0) this.list.set(k, next)
         else this.list.delete(k)
@@ -760,17 +853,6 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => controller.dispose(), 'paste-code-block: state')
 
       // ----- chip DOM sync: localized labels + per-chip ✕ delete button -----
-      function chipInner(host) { return host.querySelector(':scope > span') }
-      function chipLabelText(host) {
-        const inner = chipInner(host)
-        if (!inner) return ''
-        const title = inner.getAttribute('title')
-        if (title) return title
-        const spans = [...inner.querySelectorAll(':scope > span')].filter((s) => !s.classList.contains(CHIP_X_CLASS))
-        const labelEl = spans[spans.length - 1]
-        return (labelEl && labelEl.textContent) || inner.textContent || ''
-      }
-
       function scanChips() {
         if (typeof document === 'undefined') return
         if (controller.list.size === 0) return
@@ -856,21 +938,6 @@ window.__ModuleLoader__.load({
         document.head.appendChild(style)
         return () => style.remove()
       }, 'paste-code-block: styles')
-
-      // Resolve the active session for an event inside the composer seat.
-      function sessionFor(target) {
-        const seat = target.closest(`[${MARK}]`)
-        let sid = seat && seat.getAttribute(MARK_SESSION)
-        if (!sid && target.parentElement) {
-          let el = target.parentElement
-          while (el) {
-            const rail = el.querySelector && el.querySelector('[data-dsh-pcb-rail]')
-            if (rail) { sid = rail.getAttribute('data-dsh-pcb-session') || sid; break }
-            el = el.parentElement
-          }
-        }
-        return sid
-      }
 
       // Turn qualifying pastes into boxed inline chips.
       const onPaste = (ev) => {

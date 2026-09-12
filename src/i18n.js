@@ -33,6 +33,7 @@ export const zh = {
   'remove': '移除',
   'edit.aria': '编辑代码块内容',
   'error.stale': '代码块已失效，请重新粘贴',
+  'error.remove': '无法删除该块，请重试',
 }
 
 /** English dictionary, key-identical to the Chinese source of truth. */
@@ -51,6 +52,7 @@ export const en = {
   'remove': 'Remove',
   'edit.aria': 'Edit block content',
   'error.stale': 'This block is no longer valid — paste it again',
+  'error.remove': 'Could not remove the block — please retry',
 }
 
 /** Shipped dictionaries keyed by locale id (mirrors DSH's built-in zh/en set). */
