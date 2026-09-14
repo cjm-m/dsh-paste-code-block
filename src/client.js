@@ -1423,7 +1423,9 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'sessions', 'conversation', 'inputTriggers', 'locale']
 
     function apply(ctx) {
-      try { console.log('[dsh-paste-code-block] client loaded') } catch (e) { /* noop */ }
+      // Bump alongside package.json on every release — the load log is the
+      // only proof of WHICH bundle generation the browser actually loaded.
+      try { console.log('[dsh-paste-code-block] client loaded v0.2.2') } catch (e) { /* noop */ }
 
       // Publish our dictionaries under the plugin namespace, then bind a
       // translator that always reflects the ACTIVE DSH language (Settings →
