@@ -287,9 +287,24 @@ character experience through a different door. Identical clipboard text arriving
 than a human can act now collapses into one paste (`pasteStorm.seen`, 500 ms sliding
 window refreshed on every matching event, so a held repeat stays suppressed while it
 continues); suppressed events are still `preventDefault`ed so raw text never falls
-through to the composer, and distinct texts or spaced-out deliberate re-pastes are
-honored. The plugin cannot suppress the automation itself — users hitting this should
-disable AutoClicker-style userscripts on the DSH page.
+through to the composer. The plugin cannot suppress the automation itself — users
+hitting this should disable AutoClicker-style userscripts on the DSH page.
+
+**Content-liveness dedup (0.2.4).** The field report after 0.2.3: typing still
+bounced every few characters, and the console showed the SAME 6-line python block
+`intercept`ed again and again — the re-dispatch stream kept spacing its copies
+JUST beyond the 500 ms window, so every escaped paste minted a chip, rewrote the
+draft and dragged the caret to its end. Time was only ever a proxy for intent;
+the invariant is content. `attach()` now records the exact clipboard text on the
+block (`sourceText`, carried through the recovery mirror as `src`), and a paste
+whose text still matches a LIVE block in that composer (chip occurrence present)
+is consumed like a storm event — no block, no draft rewrite, no bounce. Once the
+chip is removed or sent the same text is fresh intent again. Distinct clipboard
+text is honored at any pace, back-to-back or not, exactly as before. The
+`intercept` load log gained `trusted=` — `false` names a page-script dispatch
+(userscript glue, or the `dsh-vision-router` image-paste replay, which carries
+the original text and lands seconds after the trusted paste) rather than a real
+Ctrl+V, so the next storm report identifies its own source.
 
 Two DSH paths strand pasted blocks mid-draft, and both share one signature. (a) A page
 reload re-seeds the composer from DSH's persisted per-session draft

@@ -554,16 +554,29 @@ test('a paste-storm of identical clipboard text attaches exactly one block (0.2.
   const plain = firePaste('hi')
   assert.equal(plain.prevented, false, 'non-block paste is not intercepted')
   assert.equal(controller.listFor(sid).length, 2)
-  // The original text pasted again is a fresh intent after the switch…
+  // The original text pasted again, even with other content in between, is
+  // NOT a fresh intent while its chip is still attached (0.2.4).
+  const re = firePaste(text)
+  assert.equal(controller.listFor(sid).length, 2, 'an identical live block absorbs the re-paste')
+  assert.ok(re.prevented, 'duplicate pastes are consumed — raw text never falls through')
+  // The in-window repeat path still short-circuits ahead of the dedup.
   firePaste(text)
-  assert.equal(controller.listFor(sid).length, 3)
-  // …its immediate repeat collapses inside the window…
-  firePaste(text)
-  assert.equal(controller.listFor(sid).length, 3, 'in-window repeat is still suppressed')
-  // …and once the window expires, an identical re-paste is honored again.
+  assert.equal(controller.listFor(sid).length, 2, 'in-window repeat is still suppressed')
+  // Slow re-dispatch past the window is suppressed too: the escaped tail of
+  // a storm must never mint a chip or move the caret mid-typing.
   storm.lastAt = 0
   firePaste(text)
-  assert.equal(controller.listFor(sid).length, 4, 'after the window, re-pasting is a fresh intent')
+  assert.equal(controller.listFor(sid).length, 2, 'out-of-window re-paste of an attached block is not a new intent')
+  assert.ok(controller.listFor(sid).some((b) => b.sourceText === text), 'sourceText recorded on the attached block')
+  // Chip gone (hand-deletion prunes the list) and the same text is fresh intent again.
+  controller.reconcile(sid, [], 'plain')
+  assert.equal(controller.listFor(sid).length, 0, 'chips gone: state pruned')
+  storm.lastAt = 0
+  firePaste(text)
+  assert.equal(controller.listFor(sid).length, 1, 're-paste after removal is honored again')
+  // Distinct content is always honored, chip or no chip.
+  firePaste('brand new content X\ncontent Y')
+  assert.equal(controller.listFor(sid).length, 2)
   globalThis.document.activeElement = null
   seat.remove()
 })
