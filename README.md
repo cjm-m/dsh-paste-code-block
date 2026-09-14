@@ -25,7 +25,7 @@ Copying a 200‑line stack trace, an API response, or a long log into a chat inp
 - 🧩 **Auto block detection** — pasted text with ``` fences, newlines, heavy indentation, or length ≥ 96 becomes a card; ordinary short prose pastes through untouched.
 - 🏷️ **Language tags** — auto-detects Python / JS / JSON / YAML / SQL / bash / HTML·XML / C++ / Go / Ruby (incl. shebangs); plain-text blocks are tagged `text`.
 - ✏️ **In-card editing** — edit the content right in the detail card; the edited text is exactly what gets sent. Plus copy, collapse/expand, and hide.
-- 🈯 **Localized names** — chips are named in the current DSH language: `复制代码块1` / `Code block #1`, `复制文本块N` / `Text block #N`. Switching **Settings → Language** live-retitles every chip.
+- 🈯 **Localized names** — chips are named in the current DSH language: `代码块 1` / `Code #1`, `文本块 N` / `Text #N`. A leading glyph and tint tells the two apart at a glance — `</>` blue for code, `Aa` gray for text. Switching **Settings → Language** live-retitles every chip.
 - × **One-click remove** — every chip carries its own `×` delete button (the detail card has one too); a removed number is recycled immediately.
 - 📤 **Fenced restore on send** — each card expands back into a ```` ```lang … ``` ```` block when you send; a failed send automatically refills the input.
 - 🔢 **Smart numbering** — code and text count apart; the smallest free number is always reused.
@@ -43,7 +43,7 @@ Chip labels, tooltips, line counts, and the send-time error notice all render th
 
 - **New pastes** are named in whatever language is active at paste time.
 - **Existing chips** are re-titled live when you flip 设置 → 语言 / Settings → Language — no reload needed.
-- Clicks and deletes match chips **across languages**: a `复制代码块2` chip still resolves to its block after switching to English (where it now reads `Code block #2`), and vice versa.
+- Clicks and deletes match chips **across languages**: a `代码块 2` chip still resolves to its block after switching to English (where it now reads `Code #2`), and vice versa.
 
 ## Install
 
@@ -65,7 +65,7 @@ dsh plugin --profile web add file:/path/to/dsh-paste-code-block  # from a local 
 ## Usage
 
 1. Copy any code or multi-line text from anywhere.
-2. Paste into the DSH input → it collapses into a chip such as `复制代码块1` / `Code block #1`.
+2. Paste into the DSH input → it collapses into a chip such as `代码块 1` / `Code #1`.
 3. Click the chip to open the card: read, edit inline, copy, collapse. Click the chip's (or the card's) `×` to delete that block.
 4. Send — the full original text goes out as a proper fenced code block.
 

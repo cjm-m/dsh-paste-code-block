@@ -16,10 +16,17 @@ test('zh and en dictionaries carry identical key sets', () => {
 })
 
 test('block labels render in both locales with the number interpolated', () => {
-  assert.equal(blockLabel(createT('zh'), 'code', 2), '复制代码块2')
-  assert.equal(blockLabel(createT('zh'), 'text', 7), '复制文本块7')
-  assert.equal(blockLabel(createT('en'), 'code', 2), 'Code block #2')
-  assert.equal(blockLabel(createT('en'), 'text', 7), 'Text block #7')
+  assert.equal(blockLabel(createT('zh'), 'code', 2), '代码块 2')
+  assert.equal(blockLabel(createT('zh'), 'text', 7), '文本块 7')
+  assert.equal(blockLabel(createT('en'), 'code', 2), 'Code #2')
+  assert.equal(blockLabel(createT('en'), 'text', 7), 'Text #7')
+})
+
+test('chip names stay action-free (no “复制” wording on reference chips)', () => {
+  // The chip is a reference badge, not a copy button; the old 0.1.2 names
+  // read like an imperative and were dropped in 0.1.3.
+  assert.ok(!zh['block.code'].includes('复制'))
+  assert.ok(!zh['block.text'].includes('复制'))
 })
 
 test('parseBlockLabel round-trips every locale and both block types', () => {
@@ -37,8 +44,16 @@ test('parseBlockLabel round-trips every locale and both block types', () => {
 test('a label in one language still parses while the other is active', () => {
   // Chips keep the insert-time label until the client retitles them; identity
   // recovery must be locale-independent either way.
+  assert.deepEqual(parseBlockLabel('代码块 3'), { type: 'code', n: 3 })
+  assert.deepEqual(parseBlockLabel('Text #4'), { type: 'text', n: 4 })
+})
+
+test('legacy pre-0.1.3 labels still resolve to their block identity', () => {
+  // Chips inserted by an older bundle keep working until the next retitle.
   assert.deepEqual(parseBlockLabel('复制代码块3'), { type: 'code', n: 3 })
-  assert.deepEqual(parseBlockLabel('Text block #4'), { type: 'text', n: 4 })
+  assert.deepEqual(parseBlockLabel('复制文本块12'), { type: 'text', n: 12 })
+  assert.deepEqual(parseBlockLabel('Code block #4'), { type: 'code', n: 4 })
+  assert.deepEqual(parseBlockLabel('Text block #1'), { type: 'text', n: 1 })
 })
 
 test('parseBlockLabel rejects anything that is not a block label', () => {

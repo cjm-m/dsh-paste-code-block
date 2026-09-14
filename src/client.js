@@ -94,8 +94,8 @@ window.__ModuleLoader__.load({
     const NS = 'paste-code-block'
     const L10N = {
       zh: {
-        'block.code': '复制代码块{n}',
-        'block.text': '复制文本块{n}',
+        'block.code': '代码块 {n}',
+        'block.text': '文本块 {n}',
         'detail.aria': '代码块详情',
         'slot.label': '粘贴代码块详情',
         'lines.one': '{count} 行',
@@ -111,8 +111,8 @@ window.__ModuleLoader__.load({
         'error.remove': '无法删除该块，请重试',
       },
       en: {
-        'block.code': 'Code block #{n}',
-        'block.text': 'Text block #{n}',
+        'block.code': 'Code #{n}',
+        'block.text': 'Text #{n}',
         'detail.aria': 'Block details',
         'slot.label': 'Pasted block details',
         'lines.one': '{count} line',
@@ -147,15 +147,22 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // Pre-0.1.3 chip labels: no longer rendered, still recognized (see below).
+    const LEGACY_L10N = {
+      zh: { 'block.code': '复制代码块{n}', 'block.text': '复制文本块{n}' },
+      en: { 'block.code': 'Code block #{n}', 'block.text': 'Text block #{n}' },
+    }
+
     /**
-     * Recognize a rendered block label in ANY shipped locale and recover its
-     * `{ type, n }` identity — this keeps chip clicks, ✕ deletes, and the
-     * locale-switch retitling correct even for chips inserted under a
-     * different language than the one currently active. Null otherwise.
+     * Recognize a rendered block label in ANY shipped locale (or a pre-0.1.3
+     * legacy locale) and recover its `{ type, n }` identity — this keeps chip
+     * clicks, ✕ deletes, and the locale-switch retitling correct even for
+     * chips inserted under a different language than the one currently
+     * active. Null otherwise.
      */
     function parseBlockLabel(text) {
       if (!text) return null
-      for (const dict of [L10N.zh, L10N.en]) {
+      for (const dict of [L10N.zh, L10N.en, LEGACY_L10N.zh, LEGACY_L10N.en]) {
         for (const key of ['block.code', 'block.text']) {
           const pattern = new RegExp(
             '^' +
@@ -201,8 +208,8 @@ window.__ModuleLoader__.load({
     /**
      * Parse pasted text into a block, or null when it is ordinary short prose
      * that should paste plainly. `isCode` drives both the chip label
-     * (i18n key `block.code` vs `block.text`, e.g. "复制代码块N" / "Code block
-     * #N") and the fenced language on send.
+     * (i18n key `block.code` vs `block.text`, e.g. "代码块 N" / "Code #N")
+     * and the fenced language on send.
      */
     function parseBlock(raw) {
       const text = String(raw || '').replace(/^\uFEFF/, '')
@@ -849,6 +856,25 @@ window.__ModuleLoader__.load({
       /* the label text (the trailing ✕ element is ours — never ellipsis it) */
       [data-composer-chip="${SOURCE}"] > span > span:not(.${CHIP_X_CLASS}){font-weight:500!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+      /* --- type identity: leading glyph + tint (data-pcb-type set by scanChips) --- */
+      [data-composer-chip="${SOURCE}"][data-pcb-type="code"] > span{
+        border-color:var(--dsh-pcb-code-border,rgba(76,110,245,.38))!important;
+        background:var(--dsh-pcb-code-bg,rgba(76,110,245,.09))!important;
+        color:var(--dsw-alias-state-business-primary,#4c6ef5)!important
+      }
+      [data-composer-chip="${SOURCE}"][data-pcb-type="code"]:hover > span{
+        border-color:var(--dsw-alias-state-business-primary,#4c6ef5)!important;
+        background:var(--dsh-pcb-code-bg-hover,rgba(76,110,245,.16))!important
+      }
+      [data-composer-chip="${SOURCE}"][data-pcb-type="code"] > span::before{
+        content:'</>';flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);
+        font-size:10px;font-weight:700;line-height:16px;opacity:.9
+      }
+      [data-composer-chip="${SOURCE}"][data-pcb-type="text"] > span::before{
+        content:'Aa';flex:none;font-size:10px;font-weight:700;line-height:16px;
+        letter-spacing:.2px;color:var(--dsw-alias-label-tertiary)
+      }
+
       /* --- per-chip ✕ delete button (element we own, appended inside the chip) --- */
       .${CHIP_X_CLASS}{
         box-sizing:border-box;flex:none;width:16px;height:16px;display:inline-grid;place-items:center;
@@ -923,6 +949,11 @@ window.__ModuleLoader__.load({
           if (!sid) continue
           const block = controller.listFor(sid).find((b) => b.type === parsed.type && b.labelNumber === parsed.n)
           if (!block) continue
+          // Tag the chip host with its type so CSS can render the leading
+          // glyph and tint (code = blue `</>`, text = neutral `Aa`).
+          if (host.getAttribute('data-pcb-type') !== parsed.type) {
+            host.setAttribute('data-pcb-type', parsed.type)
+          }
           // Retitle the chip to the current language. Lexical caches the
           // insert-time label inside the node, so on a Settings → Language
           // switch (or a chip that remounted with the old label) the DOM is

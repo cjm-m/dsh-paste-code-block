@@ -48,7 +48,7 @@ mechanism that renders file/upload references inline. The plugin registers a sou
 - `codec.clipboardText` → `''` (the chip leaves no visible text on copy)
 - `codec.serialize(ref)` → the block's fenced ```` ```lang … ``` ```` text
 
-The chip label is the localized human-readable badge (`复制代码块N` / `Code block #N` — see §9);
+The chip label is the localized human-readable badge (`代码块 N` / `Code #N` — see §9);
 clicking it opens the detail card, and each chip carries a `×` button that deletes the block
 (see §10).
 
@@ -70,7 +70,7 @@ Numbers are tracked **per session, split by type** (`code` vs `text`):
 - `nextLabel` always allocates the **smallest free integer** (`while (used.has(n)) n++`).
 - Deleting a chip frees its number; the next paste reuses it.
 
-So `复制代码块1` … `复制代码块N` and `复制文本块1` … `复制文本块M` each count independently and
+So `代码块 1` … `代码块 N` and `文本块 1` … `文本块 M` each count independently and
 stay dense after removals.
 
 ## 6. Markdown vs. code detection
@@ -111,6 +111,15 @@ Block names are produced through **DSH's own locale service**, the same one firs
   `t(key, params)`.
 - The dock slot entry declares `locale: NS`, so the renderer hands it a fresh `t` seat **and
   re-renders it on every locale revision**.
+
+**Naming and visual identity (0.1.3).** A chip is a *reference badge*, not an action button, so
+the pre-0.1.3 names carried a verb nobody invokes on it — `复制代码块N` / `Code block #N` read
+like a command and burned width inside the composer. Current names are noun + number
+(`代码块 1` / `Code #1`). The code/text distinction moved from wording to visuals: `scanChips`
+tags every chip host with `data-pcb-type`, and CSS renders a leading glyph — `</>` for code
+(mono, business-primary) and `Aa` for text (neutral gray) — plus a soft blue tint on code
+chips. Pre-0.1.3 labels stay parseable through the `legacyLabels` table, so chips inserted by
+an older bundle keep their click/✕/retitle identity until the next locale-synced retitle.
 
 **Chip retitling across switches.** The chip label is *insert-time* content: Lexical caches the
 label inside the decorator node, and React never re-renders those node bodies while the node

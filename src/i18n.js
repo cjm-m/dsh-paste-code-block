@@ -1,8 +1,8 @@
 /**
  * dsh-paste-code-block — locale dictionaries and label logic (pure, no DOM).
  *
- * Canonical source for the user-visible names of pasted blocks ("复制代码块N"
- * vs "Code block #N", etc.). The browser half (`client.js`) embeds its own
+ * Canonical source for the user-visible names of pasted blocks ("代码块 1"
+ * vs "Code #1", etc.). The browser half (`client.js`) embeds its own
  * copy of this logic because DSH's client module loader resolves *package
  * names*, not relative ESM files; this module is the single place where that
  * logic is unit-tested. **Keep `src/i18n.js` and the embedded copy in
@@ -19,8 +19,8 @@ export const NS = 'paste-code-block'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
-  'block.code': '复制代码块{n}',
-  'block.text': '复制文本块{n}',
+  'block.code': '代码块 {n}',
+  'block.text': '文本块 {n}',
   'detail.aria': '代码块详情',
   'slot.label': '粘贴代码块详情',
   'lines.one': '{count} 行',
@@ -38,8 +38,8 @@ export const zh = {
 
 /** English dictionary, key-identical to the Chinese source of truth. */
 export const en = {
-  'block.code': 'Code block #{n}',
-  'block.text': 'Text block #{n}',
+  'block.code': 'Code #{n}',
+  'block.text': 'Text #{n}',
   'detail.aria': 'Block details',
   'slot.label': 'Pasted block details',
   'lines.one': '{count} line',
@@ -57,6 +57,16 @@ export const en = {
 
 /** Shipped dictionaries keyed by locale id (mirrors DSH's built-in zh/en set). */
 export const dictionaries = { zh, en }
+
+/**
+ * Pre-0.1.3 chip labels ("复制代码块N" / "Code block #N" …). No longer
+ * rendered, but still recognized by `parseBlockLabel` so chips inserted by an
+ * older bundle keep resolving to their block after an in-place page refresh.
+ */
+export const legacyLabels = {
+  zh: { 'block.code': '复制代码块{n}', 'block.text': '复制文本块{n}' },
+  en: { 'block.code': 'Code block #{n}', 'block.text': 'Text block #{n}' },
+}
 
 /**
  * Standalone translator used only when no DSH locale service is present
@@ -82,21 +92,21 @@ export function detectBrowserLocale() {
   }
 }
 
-/** Build a block chip label from a translator: 复制代码块2 / Code block #2. */
+/** Build a block chip label from a translator: 代码块 2 / Code #2. */
 export function blockLabel(t, type, n) {
   return t(type === 'code' ? 'block.code' : 'block.text', { n })
 }
 
 /**
- * Recognize a rendered block label in ANY shipped locale and recover its
- * `{ type, n }` identity. This lets a chip click, an ✕ delete, and the
- * locale-switch retitling find the right block even when the chip was
- * inserted under a different language than the one currently active.
- * Returns null for anything that is not a block label.
+ * Recognize a rendered block label in ANY shipped locale (or a pre-0.1.3
+ * legacy locale) and recover its `{ type, n }` identity. This lets a chip
+ * click, an ✕ delete, and the locale-switch retitling find the right block
+ * even when the chip was inserted under a different language than the one
+ * currently active. Returns null for anything that is not a block label.
  */
 export function parseBlockLabel(text) {
   if (!text) return null
-  for (const dict of [dictionaries.zh, dictionaries.en]) {
+  for (const dict of [dictionaries.zh, dictionaries.en, legacyLabels.zh, legacyLabels.en]) {
     for (const key of ['block.code', 'block.text']) {
       const pattern = new RegExp(
         '^' +
