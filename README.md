@@ -4,7 +4,7 @@
 
 **Cherry Studio‑style text/code block pasting for DeepSeek Harness Web**
 
-Paste long code or text into the DSH Web composer → it lands as a **bordered, collapsible, language‑tagged card** instead of a wall of text. Names follow the DSH interface language (中文 / English). On send, the original content is restored as a fenced code block.
+Paste long code or text into the DSH Web composer → it lands as a **bordered, collapsible, language‑tagged card** instead of a wall of text. Names follow the DSH interface language (中文 / English). On send, the original content is restored as a fenced code block — and in the conversation it **stays folded** into click‑to‑expand cards, so your bubbles never become text walls again.
 
 [![npm version](https://img.shields.io/npm/v/dsh-paste-code-block?logo=npm)](https://www.npmjs.com/package/dsh-paste-code-block)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
@@ -28,6 +28,7 @@ Copying a 200‑line stack trace, an API response, or a long log into a chat inp
 - 🈯 **Localized names** — chips are named in the current DSH language: `代码块 1` / `Code #1`, `文本块 N` / `Text #N`. A leading glyph and tint tells the two apart at a glance — `</>` blue for code, `Aa` gray for text. Switching **Settings → Language** live-retitles every chip.
 - × **One-click remove** — every chip carries its own `×` delete button (the detail card has one too); a removed number is recycled immediately.
 - 📤 **Fenced restore on send** — each card expands back into a ```` ```lang … ``` ```` block when you send; a failed send automatically refills the input.
+- 📦 **Folded after send** — sent blocks keep folding in the transcript: every fenced block inside your own messages renders as a collapsed card (`python · 128 行` / `python · 128 lines`). Click the header to expand, again to collapse; the card's copy button grabs the original fenced text verbatim.
 - 🔢 **Smart numbering** — code and text count apart; the smallest free number is always reused.
 - 📱 **Every surface** — pure client plugin; works on desktop & mobile web, follows light/dark themes.
 
@@ -68,6 +69,7 @@ dsh plugin --profile web add file:/path/to/dsh-paste-code-block  # from a local 
 2. Paste into the DSH input → it collapses into a chip such as `代码块 1` / `Code #1`.
 3. Click the chip to open the card: read, edit inline, copy, collapse. Click the chip's (or the card's) `×` to delete that block.
 4. Send — the full original text goes out as a proper fenced code block.
+5. In the conversation it stays folded: each block sits in the bubble as a collapsed card — click the header to expand and read, click again to collapse.
 
 Detection threshold: **contains a newline / ≥ 2 lines / length ≥ 96 / indented & brace-dense / fenced** — any one turns the paste into a block.
 
@@ -78,21 +80,23 @@ Detection threshold: **contains a newline / ≥ 2 lines / length ≥ 96 / indent
 - Removing a chip any other way (e.g. `Backspace`) also frees its number — plugin state is reconciled against the editor continuously.
 - Deleting one block never touches the others, and removal is an ordinary editor edit — `Ctrl+Z` brings it back.
 - Creating a block leaves **no stray space**: DSH appends a separating space after a freshly inserted chip, and the plugin removes exactly that one character, so text typed after a block does not start with a space and pasting several blocks never piles spaces into the message. Spaces you typed yourself are never touched by pasting or deleting.
+- Post-send folding is **display-only**: it restyles your own message bubbles (and steering rows / the send echo) in the DOM. Stored messages are never modified, the bubble's own copy / edit / delete bar keeps working on the original text, and assistant messages are left alone.
 
 ## Project layout
 
 ```
 dsh-paste-code-block/
 ├── src/
-│   ├── client.js       # Web (browser) half — paste capture, chips, detail card, × delete
+│   ├── client.js       # Web (browser) half — paste capture, chips, detail card, × delete, sent-message fold
 │   ├── index.js        # Host (node) half — intentionally empty (pure UI plugin)
-│   ├── parse.js        # Pure block-detection logic (canonical, unit-tested)
-│   └── i18n.js         # Locale dictionaries + label parsing (canonical, unit-tested)
+│   ├── parse.js        # Pure block-detection + fence-splitting logic (canonical, unit-tested)
+│   └── i18n.js         # Locale dictionaries, label & fold-title builders (canonical, unit-tested)
 ├── tests/
-│   ├── parse.test.js   # node:test unit tests for src/parse.js
-│   └── i18n.test.js    # node:test unit tests for src/i18n.js
+│   ├── parse.test.js     # node:test unit tests for src/parse.js
+│   ├── i18n.test.js      # node:test unit tests for src/i18n.js
+│   └── fold-smoke.test.js # end-to-end fold scan against a DOM shim (runs the real client bundle)
 ├── docs/
-│   ├── design.md       # Design rationale (numbering, anchors, codec, i18n, chip ×)
+│   ├── design.md       # Design rationale (numbering, anchors, codec, i18n, chip ×, sent-message fold)
 │   └── images/         # README mockups (PNG + editable SVG sources)
 ├── cordis.patch.yml    # DSH bundle patch declaring the host plugin
 ├── package.json        # Package + DSH plugin manifest
@@ -104,7 +108,7 @@ dsh-paste-code-block/
 
 ```sh
 npm run check   # syntax-check the JS halves
-npm test        # run unit tests (node:test, 38 tests)
+npm test        # run unit tests (node:test, 61 tests)
 ```
 
 ## License

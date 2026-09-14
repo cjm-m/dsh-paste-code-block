@@ -203,3 +203,52 @@ placeholder character). `detectOffsetOf()` converts with
 `detect = clipboard - Σ(len_i - 1)` over preceding occurrences, so blocks stay correctly
 addressed even when other plugins' chips (file references and the like) sit in the same draft.
 Both helpers are pure and unit-tested (8 cases in tests/projection.test.js).
+
+## 12. Sent-message folding (0.2.0)
+
+The composer fold was only half the story: on send the chips expand back into fenced text, and
+DSH renders user bubbles as **plain pre-wrap text** (`projectUserText` → `span.plainRun` runs
+plus `data-ref-chip` badges), so the sent message reappeared in the transcript as the very wall
+of text the plugin exists to prevent. §12 folds *sent* blocks back down.
+
+**Where the DOM hooks are.** Every conversation row carries `data-chat-flow-kind`
+(`user` / `steering` / `agent` / …) and `data-chat-flow-key` on its wrapper; the right-aligned
+user bubble lives under the same row and contains the `plainRun` spans. The send echo
+(`data-submission-echo`) and pending steering (`data-pending-steering`) render the same bubble
+markup one frame before the durable node exists, so scanning all four gives an instant
+collapsed view from the moment of send. Assistant output is deliberately not touched: its
+markdown renderer already styles code blocks its own way.
+
+**Never fight React.** The bubble's children belong to React; removing them would make the
+next reconciliation throw. So the fold *hides* a qualifying `plainRun` span (`display:none` —
+the node stays a child, React keeps patching it harmlessly) and inserts a
+`div.dsh-pcb-fold-host` **after** it. The host is ours: prose segments re-render as
+`span.dsh-pcb-fold-prose`, each fence as a collapsed card (glyph `</>`/`Aa` + localized title
+`python · 128 行` / `Text · 128 lines`, copy button copying the **raw fenced text** exactly as
+sent, click-to-expand `<pre>`). Since hiding a child does not affect `textContent`, the
+message action bar (React-side copy/edit/delete) is entirely unaffected.
+
+**What folds.** `splitFencedSegments()` (canonical in `src/parse.js`, embedded copy in
+`client.js`) walks the run line by line with GFM fence rules (``` or ~~~, opener indented ≤ 3
+spaces, closer ≥ opener length alone on its line; backticks in a ``` info string kill that
+opener; an unterminated opener stays prose). Any fence segment with a non-empty body folds;
+everything else — prose, whitespace between blocks, empty fences — renders verbatim around
+the cards. Fence-only (not "any long text") is deliberate: composer-created blocks always
+travel as fences, while unfenced long messages may have been *typed*, and silently folding
+typed prose would be a nasty surprise.
+
+**Idempotence and refresh.** Each scanned run gets
+`data-dsh-pcb-run = "1|<stamp>"` (folded) or `"0|<stamp>"` (checked, nothing to fold), where
+the stamp folds `foldRev`, text length, and an FNV-1a hash. The shared chip-sync
+MutationObserver coalesces to one rAF scan; a run whose stamp matches is skipped, so steady
+state costs attribute reads. A locale switch bumps `foldRev`, which invalidates every stamp —
+the next scan rebuilds each host and re-titles cards from the live translator. Rebuilds
+preserve who was expanded via a stable `flowKey#runIndex:segIndex` open set, and an orphan
+sweep drops any host whose predecessor is no longer its hidden, stamp-matching run (React can
+remount the run underneath us). Disposal (HMR / plugin removal) removes all hosts and unhides
+every run — the transcript hands back clean.
+
+`tests/fold-smoke.test.js` exercises the real bundle against a dependency-free DOM shim:
+fold → marker/card/prose structure, steering rows, non-fenced messages untouched, retitle
+across locale switches with open-state kept, text edits re-fold and unfold, orphan sweep,
+and dispose restoration.

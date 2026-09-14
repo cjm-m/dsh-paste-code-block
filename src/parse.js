@@ -100,3 +100,67 @@ export function serializeBlock(block) {
   const lang = block.isCode ? (block.lang || '') : 'text'
   return `\n\`\`\`${lang}\n${block.content}\n\`\`\`\n`
 }
+
+/**
+ * Split a message text into ordered `prose` / `fence` segments using GFM-style
+ * fenced code blocks (``` or ~~~, opening fence indented at most 3 spaces,
+ * closing fence of >= the opening length and alone on its line).
+ *
+ * Used by the sent-message fold scanner (see design.md §12): a message the
+ * plugin serialized on send comes back as fenced text inside the user
+ * bubble, and this function locates the fences so each can be rendered as a
+ * collapsed card while the surrounding prose stays visible.
+ *
+ * Returns [] for empty input. Segments:
+ *  - { kind: 'prose', text }                          — verbatim lines between fences
+ *  - { kind: 'fence', lang, info, body, raw }         — complete, terminated fence
+ *      lang  = first word of the info string ('' when absent)
+ *      info  = trimmed info string
+ *      body  = content between the fence lines (no fences, verbatim)
+ *      raw   = the whole slice including both fence lines
+ * An unterminated opening fence (no matching close) is kept in the prose run
+ * — conservative: we never fold text we are not sure ended.
+ */
+export function splitFencedSegments(text) {
+  const src = String(text == null ? '' : text)
+  if (!src) return []
+  const lines = src.split(/\r?\n/)
+  const segments = []
+  const OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/
+  let proseStart = 0
+  let i = 0
+  const flushProse = (end) => {
+    if (end > proseStart) segments.push({ kind: 'prose', text: lines.slice(proseStart, end).join('\n') })
+  }
+  while (i < lines.length) {
+    const m = OPEN.exec(lines[i])
+    if (!m) { i += 1; continue }
+    const marker = m[1]
+    const ch = marker[0]
+    const info = m[2].trim()
+    // A ``` fence's info string may not contain backticks (GFM); if it does,
+    // this line is ordinary prose, not an opener.
+    if (ch === '`' && info.includes('`')) { i += 1; continue }
+    const closeRe = new RegExp('^ {0,3}' + (ch === '`' ? '`' : '~') + '{' + marker.length + ',}[ \\t]*$')
+    let j = i + 1
+    let closed = false
+    while (j < lines.length) {
+      if (closeRe.test(lines[j])) { closed = true; break }
+      j += 1
+    }
+    if (!closed) { i += 1; continue } // unterminated -> stays prose, keep scanning
+    flushProse(i)
+    const bodyLines = lines.slice(i + 1, j)
+    segments.push({
+      kind: 'fence',
+      lang: info ? info.split(/\s+/)[0] : '',
+      info,
+      body: bodyLines.join('\n'),
+      raw: lines.slice(i, j + 1).join('\n'),
+    })
+    i = j + 1
+    proseStart = i
+  }
+  flushProse(lines.length)
+  return segments
+}

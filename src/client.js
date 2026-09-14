@@ -109,6 +109,9 @@ window.__ModuleLoader__.load({
         'edit.aria': '编辑代码块内容',
         'error.stale': '代码块已失效，请重新粘贴',
         'error.remove': '无法删除该块，请重试',
+        'fold.code': '代码块',
+        'fold.text': '文本块',
+        'fold.aria': '展开或折叠该块',
       },
       en: {
         'block.code': 'Code #{n}',
@@ -126,6 +129,9 @@ window.__ModuleLoader__.load({
         'edit.aria': 'Edit block content',
         'error.stale': 'This block is no longer valid — paste it again',
         'error.remove': 'Could not remove the block — please retry',
+        'fold.code': 'Code',
+        'fold.text': 'Text',
+        'fold.aria': 'Expand or collapse this block',
       },
     }
 
@@ -136,6 +142,13 @@ window.__ModuleLoader__.load({
         if (params) text = text.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m))
         return text
       }
+    }
+
+    // Sent-message fold card title (embedded copy of src/i18n.js#foldTitle).
+    function foldTitle(t, type, lang, lines) {
+      const meta = t(lines === 1 ? 'lines.one' : 'lines.other', { count: lines })
+      const name = type === 'code' ? (lang || t('fold.code')) : t('fold.text')
+      return `${name} · ${meta}`
     }
 
     function detectBrowserLocale() {
@@ -267,6 +280,52 @@ window.__ModuleLoader__.load({
     function serializeBlock(block) {
       const lang = block.isCode ? (block.lang || '') : 'text'
       return `\n\`\`\`${lang}\n${block.content}\n\`\`\`\n`
+    }
+
+    // ----- fence segmentation (embedded copy of src/parse.js) ----------------
+    // Split a message text into ordered prose/fence segments (GFM-style ``` or
+    // ~~~ fences, opener indented <=3 spaces, closer >= opener length alone on
+    // its line). Unterminated openers stay prose. Keep in sync with parse.js.
+    function splitFencedSegments(text) {
+      const src = String(text == null ? '' : text)
+      if (!src) return []
+      const lines = src.split(/\r?\n/)
+      const segments = []
+      const OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/
+      let proseStart = 0
+      let i = 0
+      const flushProse = (end) => {
+        if (end > proseStart) segments.push({ kind: 'prose', text: lines.slice(proseStart, end).join('\n') })
+      }
+      while (i < lines.length) {
+        const m = OPEN.exec(lines[i])
+        if (!m) { i += 1; continue }
+        const marker = m[1]
+        const ch = marker[0]
+        const info = m[2].trim()
+        if (ch === '`' && info.includes('`')) { i += 1; continue }
+        const closeRe = new RegExp('^ {0,3}' + (ch === '`' ? '`' : '~') + '{' + marker.length + ',}[ \\t]*$')
+        let j = i + 1
+        let closed = false
+        while (j < lines.length) {
+          if (closeRe.test(lines[j])) { closed = true; break }
+          j += 1
+        }
+        if (!closed) { i += 1; continue }
+        flushProse(i)
+        const bodyLines = lines.slice(i + 1, j)
+        segments.push({
+          kind: 'fence',
+          lang: info ? info.split(/\s+/)[0] : '',
+          info,
+          body: bodyLines.join('\n'),
+          raw: lines.slice(i, j + 1).join('\n'),
+        })
+        i = j + 1
+        proseStart = i
+      }
+      flushProse(lines.length)
+      return segments
     }
 
     // ===== Draft controller ==================================================
@@ -834,6 +893,156 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ===== Sent-message fold =================================================
+    // A block that folded in the composer comes back *after send* as fenced
+    // text inside the user bubble (DSH renders user messages as plain
+    // pre-wrap runs), so the wall of text this plugin exists to prevent
+    // reappears in the transcript. scanFolds() (see apply) walks sent
+    // bubbles and folds every complete fenced block into a collapsed card:
+    //   [</>] python · 128 行        [⎘] ▾      (header click toggles)
+    // React owns the bubble's own children, so nothing is removed or
+    // reordered: the plainRun span being folded is hidden (display:none) and
+    // a host element we fully own is inserted directly after it. A content
+    // stamp on the run keeps the scan idempotent and self-refreshing — text
+    // or locale revision changes rebuild the host, and a fold that becomes
+    // unnecessary is undone. The copy button copies the RAW fenced text
+    // (exactly what was sent); the bubble's own copy/edit/delete bar is
+    // React-side and never sees this DOM.
+    const FOLD_HOST_CLASS = 'dsh-pcb-fold-host'
+    const FOLD_CARD_CLASS = 'dsh-pcb-fold'
+    const FOLD_RUN_ATTR = 'data-dsh-pcb-run'      // '1|<stamp>' folded · '0|<stamp>' checked, plain
+    const FOLD_STAMP_ATTR = 'data-dsh-pcb-stamp'  // on the host, matches the run's stamp
+    const FOLD_BUBBLE_SEL = [
+      '[data-chat-flow-kind="user"]',
+      '[data-chat-flow-kind="steering"]',
+      '[data-submission-echo]',
+      '[data-pending-steering]',
+    ].map((s) => `${s} [class*="bubble"]`).join(',')
+    const foldOpenKeys = new Set() // user-toggled-open cards, stable across rebuilds
+    let foldRev = 0                // bumped on locale switch so cards re-title
+
+    function hash32(str) {
+      let h = 0x811c9dc5
+      for (let i = 0; i < str.length; i += 1) {
+        h ^= str.charCodeAt(i)
+        h = Math.imul(h, 0x01000193)
+      }
+      return (h >>> 0).toString(36)
+    }
+
+    function foldStamp(text) {
+      return `${foldRev}:${text.length}:${hash32(text)}`
+    }
+
+    // Cheap pre-filter so the per-frame scan stays trivial on unfenced runs.
+    const FENCE_HINT = /(^|\n) {0,3}(```|~~~)/
+
+    function isFoldRun(el) {
+      return el.tagName === 'SPAN' && (el.getAttribute('class') || '').includes('plainRun')
+    }
+
+    /** Segments when the text holds at least one non-empty complete fence, else null. */
+    function foldPlanFor(text) {
+      if (!FENCE_HINT.test(text)) return null
+      const segments = splitFencedSegments(text)
+      let folds = 0
+      for (const seg of segments) if (seg.kind === 'fence' && seg.body.trim() !== '') folds += 1
+      return folds > 0 ? segments : null
+    }
+
+    function buildFoldCard(seg, openKey, t) {
+      const infoLang = (seg.lang || '').toLowerCase()
+      const isText = !infoLang || infoLang === 'text'
+      const lang = isText ? '' : (infoLang || detectLang(seg.body) || '')
+      const type = isText ? 'text' : 'code'
+      const lines = seg.body.split('\n').length
+      const open = foldOpenKeys.has(openKey)
+
+      const card = document.createElement('div')
+      card.className = FOLD_CARD_CLASS
+      card.setAttribute('data-pcb-type', type)
+      card.setAttribute('data-open', open ? '1' : '0')
+
+      const head = document.createElement('div')
+      head.className = 'dsh-pcb-fold-head'
+
+      const toggle = document.createElement('button')
+      toggle.type = 'button'
+      toggle.className = 'dsh-pcb-fold-toggle'
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+      toggle.setAttribute('aria-label', t('fold.aria'))
+      toggle.title = t(open ? 'collapse' : 'expand')
+      const glyph = document.createElement('span')
+      glyph.className = 'dsh-pcb-fold-glyph'
+      glyph.setAttribute('aria-hidden', 'true')
+      glyph.textContent = type === 'code' ? '</>' : 'Aa'
+      const title = document.createElement('span')
+      title.className = 'dsh-pcb-fold-title'
+      title.textContent = foldTitle(t, type, lang, lines)
+      const chevron = document.createElement('span')
+      chevron.className = 'dsh-pcb-fold-chevron'
+      chevron.setAttribute('aria-hidden', 'true')
+      chevron.textContent = '▾'
+      toggle.append(glyph, title, chevron)
+
+      const copy = document.createElement('button')
+      copy.type = 'button'
+      copy.className = 'dsh-pcb-btn dsh-pcb-fold-copy'
+      copy.title = t('copy')
+      copy.setAttribute('aria-label', t('copy'))
+      copy.textContent = '⎘'
+      let copyTimer = 0
+      copy.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        try {
+          const done = navigator.clipboard?.writeText(seg.raw)
+          if (done && typeof done.then === 'function') {
+            done.then(() => {
+              copy.textContent = '✓'
+              clearTimeout(copyTimer)
+              copyTimer = setTimeout(() => { copy.textContent = '⎘' }, 1200)
+            }, () => {})
+          }
+        } catch (e) { /* noop */ }
+      })
+
+      head.append(toggle, copy)
+      const pre = document.createElement('pre')
+      pre.className = 'dsh-pcb-fold-body'
+      pre.textContent = seg.body
+      card.append(head, pre)
+
+      toggle.addEventListener('click', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        const nowOpen = card.getAttribute('data-open') !== '1'
+        card.setAttribute('data-open', nowOpen ? '1' : '0')
+        toggle.setAttribute('aria-expanded', nowOpen ? 'true' : 'false')
+        toggle.title = t(nowOpen ? 'collapse' : 'expand')
+        if (nowOpen) foldOpenKeys.add(openKey)
+        else foldOpenKeys.delete(openKey)
+      })
+      return card
+    }
+
+    function buildFoldHost(segments, keyBase, t) {
+      const host = document.createElement('div')
+      host.className = FOLD_HOST_CLASS
+      segments.forEach((seg, i) => {
+        if (seg.kind === 'fence' && seg.body.trim() !== '') {
+          host.appendChild(buildFoldCard(seg, `${keyBase}:${i}`, t))
+        } else {
+          const prose = document.createElement('span')
+          prose.className = 'dsh-pcb-fold-prose'
+          // An un-foldable fence (empty body) keeps its raw text, fences and all.
+          prose.textContent = seg.kind === 'fence' ? seg.raw : seg.text
+          host.appendChild(prose)
+        }
+      })
+      return host
+    }
+
     // ===== Styles ============================================================
     const CSS = `
       /* --- restyle DSH's inline reference chip into a boxed badge --- */
@@ -905,9 +1114,26 @@ window.__ModuleLoader__.load({
       /* --- hide the composer's own placeholder while chips/cards are active --- */
       [data-dsh-pcb-active="1"] [data-composer-placeholder]{visibility:hidden}
 
+      /* --- sent-message fold cards (conversation bubbles) --- */
+      .dsh-pcb-fold-host{box-sizing:border-box;display:flex;flex-direction:column;gap:8px;width:100%;min-width:0}
+      .dsh-pcb-fold-prose{white-space:pre-wrap;word-break:break-word}
+      .dsh-pcb-fold{box-sizing:border-box;width:100%;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-specific-input-major,var(--dsw-alias-bg-layer-1));box-shadow:var(--dsw-shadow-lv1);color:var(--dsw-alias-label-primary);overflow:hidden}
+      .dsh-pcb-fold-head{box-sizing:border-box;min-height:34px;flex:none;display:flex;align-items:center;gap:4px;padding:0 6px 0 10px}
+      .dsh-pcb-fold-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:7px;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+      .dsh-pcb-fold-glyph{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:11px;font-weight:700;line-height:16px;opacity:.9}
+      .dsh-pcb-fold[data-pcb-type="code"] .dsh-pcb-fold-glyph{color:var(--dsw-alias-state-business-primary,#4c6ef5)}
+      .dsh-pcb-fold[data-pcb-type="text"] .dsh-pcb-fold-glyph{color:var(--dsw-alias-label-tertiary)}
+      .dsh-pcb-fold-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+      .dsh-pcb-fold[data-pcb-type="text"] .dsh-pcb-fold-title{font-family:var(--dsw-font-family)}
+      .dsh-pcb-fold-chevron{flex:none;width:14px;text-align:center;font-size:11px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .14s ease}
+      .dsh-pcb-fold[data-open="1"] .dsh-pcb-fold-chevron{transform:rotate(180deg)}
+      .dsh-pcb-fold[data-open="0"] .dsh-pcb-fold-body{display:none}
+      .dsh-pcb-fold-body{box-sizing:border-box;margin:0;max-height:360px;overflow:auto;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l2);font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:12px;line-height:1.5;white-space:pre;word-break:break-all;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2)}
+
       @media (max-width:640px){
         .dsh-pcb-head{height:34px}
         .dsh-pcb-lang{max-width:55%}
+        .dsh-pcb-fold-body{max-height:240px}
       }
       @media (pointer:coarse){
         .${CHIP_X_CLASS}{width:22px;height:22px;font-size:15px}
@@ -983,10 +1209,73 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // ----- sent-message fold: the scan ------------------------------------
+      function foldRun(run, plan, keyBase, stamp) {
+        run.setAttribute(FOLD_RUN_ATTR, `1|${stamp}`)
+        run.style.display = 'none'
+        const next = run.nextElementSibling
+        if (next && next.classList.contains(FOLD_HOST_CLASS)) {
+          if (next.getAttribute(FOLD_STAMP_ATTR) === stamp) return // already current
+          next.remove()
+        }
+        const host = buildFoldHost(plan, keyBase, t)
+        host.setAttribute(FOLD_STAMP_ATTR, stamp)
+        run.insertAdjacentElement('afterend', host)
+      }
+
+      /** Restore a previously folded run to DSH's own rendering. */
+      function unfoldRun(run, stamp) {
+        const next = run.nextElementSibling
+        if (next && next.classList.contains(FOLD_HOST_CLASS)) next.remove()
+        run.style.display = ''
+        run.setAttribute(FOLD_RUN_ATTR, `0|${stamp}`)
+      }
+
+      function scanFolds() {
+        if (typeof document === 'undefined') return
+        let bubbles
+        try { bubbles = document.querySelectorAll(FOLD_BUBBLE_SEL) } catch (e) { return }
+        for (const bubble of bubbles) {
+          if (!bubble.isConnected) continue
+          const holder = bubble.closest('[data-chat-flow-key]')
+          const flowKey = holder ? holder.getAttribute('data-chat-flow-key') || '' : ''
+          const kids = [...bubble.children]
+          for (let i = 0; i < kids.length; i += 1) {
+            const el = kids[i]
+            if (el.classList.contains(FOLD_HOST_CLASS)) continue
+            if (!isFoldRun(el)) continue
+            const text = el.textContent || ''
+            const stamp = foldStamp(text)
+            const marked = el.getAttribute(FOLD_RUN_ATTR) || ''
+            if (marked === `1|${stamp}` || marked === `0|${stamp}`) continue // current
+            const plan = foldPlanFor(text)
+            if (!plan) {
+              if (marked.startsWith('1|')) unfoldRun(el, stamp)
+              else el.setAttribute(FOLD_RUN_ATTR, `0|${stamp}`)
+              continue
+            }
+            // Echo/pending rows have no flow key — fall back to a content hash so
+            // two simultaneous unkeyed rows never share one open-state slot.
+            const keyBase = `${flowKey || 'h' + hash32(text)}#${i}`
+            foldRun(el, plan, keyBase, stamp)
+          }
+          // Drop orphan hosts (e.g. React remounted the run span underneath us).
+          for (const el of [...bubble.children]) {
+            if (!el.classList.contains(FOLD_HOST_CLASS)) continue
+            const prev = el.previousElementSibling
+            const mark = prev && prev.getAttribute ? prev.getAttribute(FOLD_RUN_ATTR) : null
+            const keep = !!mark && mark.startsWith('1|') &&
+              prev.style.display === 'none' &&
+              el.getAttribute(FOLD_STAMP_ATTR) === mark.slice(2)
+            if (!keep) el.remove()
+          }
+        }
+      }
+
       let scanScheduled = 0
       function scheduleScan() {
         if (scanScheduled) return
-        const run = () => { scanScheduled = 0; scanChips() }
+        const run = () => { scanScheduled = 0; scanChips(); scanFolds() }
         scanScheduled = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16)
       }
 
@@ -998,13 +1287,28 @@ window.__ModuleLoader__.load({
       }, 'paste-code-block: chip sync observer')
 
       // A locale switch (or a late dictionary registration bumps the revision
-      // too) re-derives labels: controller state first, chip DOM second.
+      // too) re-derives labels: controller state first, chip DOM second. Sent
+      // fold cards are rebuilt the same way — bumping foldRev invalidates
+      // every run stamp, so the next scan re-titles the cards in the new
+      // language while foldOpenKeys keeps who was expanded.
       ctx.effect(() => {
         const face = ctx.locale
         if (!face || typeof face.subscribe !== 'function') return undefined
-        return face.subscribe(() => { controller.retitleAll(); scheduleScan() })
+        return face.subscribe(() => { controller.retitleAll(); foldRev += 1; scheduleScan() })
       }, 'paste-code-block: locale sync')
-      scheduleScan() // late-mount safety for chips rendered before plugin boot
+      scheduleScan() // late-mount safety for chips and sent bubbles rendered before plugin boot
+
+      // On dispose (plugin removed / HMR swap) hand the transcript back to DSH.
+      ctx.effect(() => () => {
+        try {
+          for (const host of document.querySelectorAll(`.${FOLD_HOST_CLASS}`)) host.remove()
+          for (const run of document.querySelectorAll(`[${FOLD_RUN_ATTR}]`)) {
+            run.style.display = ''
+            run.removeAttribute(FOLD_RUN_ATTR)
+          }
+        } catch (e) { /* noop */ }
+        foldOpenKeys.clear()
+      }, 'paste-code-block: fold restore')
 
       ctx.effect(() => ctx.inputTriggers.registerSource({
         trigger: '@',

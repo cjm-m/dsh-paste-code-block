@@ -4,7 +4,7 @@
 
 **Cherry Studio 式的文本块/代码块粘贴效果（DeepSeek Harness Web）**
 
-把复制的**长代码 / 长文本**粘到 DSH Web 输入框时，不再糊成一长串普通文字，而是收成一张**带边框、可折叠、带语言标签的卡片**；块名称自动跟随 DSH 界面语言（中文 / English）；发送时自动还原成真正的 ```` ```lang … ``` ```` 围栏代码块。
+把复制的**长代码 / 长文本**粘到 DSH Web 输入框时，不再糊成一长串普通文字，而是收成一张**带边框、可折叠、带语言标签的卡片**；块名称自动跟随 DSH 界面语言（中文 / English）；发送时自动还原成真正的 ```` ```lang … ``` ```` 围栏代码块——**发送后在对话里也保持折叠**，点击即可展开阅读。
 
 [![npm version](https://img.shields.io/npm/v/dsh-paste-code-block?logo=npm)](https://www.npmjs.com/package/dsh-paste-code-block)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
@@ -28,6 +28,7 @@
 - 🈯 **名称本地化**：芯片按当前 DSH 界面语言命名——`代码块 1` / `Code #1`、`文本块 N` / `Text #N`；前缀图标与配色一眼区分两类块（代码 `</>` 蓝色、文本 `Aa` 灰色）；在「设置 → 语言」切换后所有芯片即时改名。
 - × **一键删除**：每个芯片自带 `×` 删除按钮（详情卡上也有）；删掉的块编号立刻回收复用。
 - 📤 **发送还原**：发送时每个卡片展开还原为 ```` ```lang … ``` ```` 围栏代码块；发送失败自动回填输入框。
+- 📦 **发送后仍折叠**：发出去的消息在对话里继续折叠成卡片（如 `python · 128 行`），气泡不再变成文字墙；点标题展开、再点收起，卡片上的复制按钮原样复制带围栏的完整代码块。
 - 🔢 **智能编号**：代码与文本分开计数，永远分配最小可用号。
 - 📱 **全端适配**：纯客户端插件，PC 与手机 Web 通用，实时跟随深浅主题。
 
@@ -68,6 +69,7 @@ dsh plugin --profile web add file:/path/to/dsh-paste-code-block  # 从本地目�
 2. 在 DSH 输入框粘贴 → 折叠成 `代码块 1` 这样的芯片。
 3. 点芯片打开详情卡：阅读、就地编辑、复制、折叠；点芯片（或卡片）上的 `×` 删除该块。
 4. 发送——完整原文以围栏代码块形式发出。
+5. 发送后对话里仍保持折叠：每个块在气泡中显示为一张卡片，点标题展开阅读、再点收起。
 
 识别阈值：**含换行 / 行数 ≥ 2 / 长度 ≥ 96 / 缩进且符号密集 / 带围栏**，任一命中即成块。
 
@@ -78,21 +80,23 @@ dsh plugin --profile web add file:/path/to/dsh-paste-code-block  # 从本地目�
 - 用其他方式删除芯片（如 `Backspace`）同样会释放编号——插件状态与编辑器持续对账。
 - 删除单个块绝不影响其它块；删除是一次普通的编辑器编辑，可用 `Ctrl+Z` 撤销找回。
 - 创建块**不会残留空格**：DSH 会在新插入的芯片后自动补一个分隔空格，插件只把这一个字符删掉——因此块后面接着输入的文字不会顶着一个前导空格，连续粘贴多个块也不会在正文里堆出多余空格；你自己敲的空格在粘贴/删除时都不会被动到。
+- 发送后折叠**只是显示层**的改动：它只重排你自己消息（含插话与发送回显）气泡的 DOM，**不改任何存储的消息数据**；气泡自带的复制/编辑/删除操作照常作用于原文；助手消息完全不受影响。
 
 ## 目录结构
 
 ```
 dsh-paste-code-block/
 ├── src/
-│   ├── client.js       # Web（浏览器侧）—— 粘贴拦截、芯片、详情卡片、× 删除
+│   ├── client.js       # Web（浏览器侧）—— 粘贴拦截、芯片、详情卡片、× 删除、发送后折叠
 │   ├── index.js        # Host（Node 侧）—— 有意为空（纯 UI 插件）
-│   ├── parse.js        # 纯块识别逻辑（规范版，含单元测试）
-│   └── i18n.js         # 词典与块名称解析（规范版，含单元测试）
+│   ├── parse.js        # 纯块识别 + 围栏切分逻辑（规范版，含单元测试）
+│   └── i18n.js         # 词典、块名称与折叠卡标题（规范版，含单元测试）
 ├── tests/
-│   ├── parse.test.js   # node:test 单元测试（src/parse.js）
-│   └── i18n.test.js    # node:test 单元测试（src/i18n.js）
+│   ├── parse.test.js     # node:test 单元测试（src/parse.js）
+│   ├── i18n.test.js      # node:test 单元测试（src/i18n.js）
+│   └── fold-smoke.test.js # 用 DOM 垫片端到端跑真实 client.js 的折叠扫描
 ├── docs/
-│   ├── design.md       # 设计说明（编号复用、锚点稳定、codec、i18n、芯片 ×）
+│   ├── design.md       # 设计说明（编号复用、锚点稳定、codec、i18n、芯片 ×、发送后折叠）
 │   └── images/         # README 示意图（PNG + 可编辑 SVG 源）
 ├── cordis.patch.yml    # DSH bundle patch，声明宿主插件
 ├── package.json        # 包与 DSH 插件清单
@@ -104,7 +108,7 @@ dsh-paste-code-block/
 
 ```sh
 npm run check   # 语法检查 JS 半端
-npm test        # 运行单元测试（node:test，38 项）
+npm test        # 运行单元测试（node:test，61 项）
 ```
 
 ## License

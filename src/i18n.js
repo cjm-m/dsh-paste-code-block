@@ -34,6 +34,9 @@ export const zh = {
   'edit.aria': '编辑代码块内容',
   'error.stale': '代码块已失效，请重新粘贴',
   'error.remove': '无法删除该块，请重试',
+  'fold.code': '代码块',
+  'fold.text': '文本块',
+  'fold.aria': '展开或折叠该块',
 }
 
 /** English dictionary, key-identical to the Chinese source of truth. */
@@ -53,6 +56,9 @@ export const en = {
   'edit.aria': 'Edit block content',
   'error.stale': 'This block is no longer valid — paste it again',
   'error.remove': 'Could not remove the block — please retry',
+  'fold.code': 'Code',
+  'fold.text': 'Text',
+  'fold.aria': 'Expand or collapse this block',
 }
 
 /** Shipped dictionaries keyed by locale id (mirrors DSH's built-in zh/en set). */
@@ -95,6 +101,19 @@ export function detectBrowserLocale() {
 /** Build a block chip label from a translator: 代码块 2 / Code #2. */
 export function blockLabel(t, type, n) {
   return t(type === 'code' ? 'block.code' : 'block.text', { n })
+}
+
+/**
+ * Build the title of a SENT-message fold card: `python · 128 行` /
+ * `Code · 128 lines`. `lang` (the fence info string) names code cards when
+ * present; text cards and untagged code cards fall back to the localized
+ * type name. Line count always renders, so users can gauge size while the
+ * card is collapsed.
+ */
+export function foldTitle(t, type, lang, lines) {
+  const meta = t(lines === 1 ? 'lines.one' : 'lines.other', { count: lines })
+  const name = type === 'code' ? (lang || t('fold.code')) : t('fold.text')
+  return `${name} · ${meta}`
 }
 
 /**

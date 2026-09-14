@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  NS, zh, en, dictionaries, createT, blockLabel, parseBlockLabel, detectBrowserLocale,
+  NS, zh, en, dictionaries, createT, blockLabel, parseBlockLabel, detectBrowserLocale, foldTitle,
 } from '../src/i18n.js'
 
 test('namespace is the plugin source name', () => {
@@ -83,6 +83,28 @@ test('createT interpolates params, falls back to en, then to the raw key', () =>
 
 test('dictionaries map exposes both locales', () => {
   assert.deepEqual(Object.keys(dictionaries).sort(), ['en', 'zh'])
+})
+
+// ===== foldTitle (sent-message fold cards) ==================================
+test('fold title localizes the type name and line count', () => {
+  assert.equal(foldTitle(createT('zh'), 'text', '', 128), '文本块 · 128 行')
+  assert.equal(foldTitle(createT('en'), 'text', '', 128), 'Text · 128 lines')
+  assert.equal(foldTitle(createT('en'), 'text', '', 1), 'Text · 1 line')
+})
+
+test('a code card shows the fence language instead of the type name', () => {
+  assert.equal(foldTitle(createT('zh'), 'code', 'python', 42), 'python · 42 行')
+  assert.equal(foldTitle(createT('en'), 'code', 'python', 42), 'python · 42 lines')
+  // Untagged code falls back to the localized type name.
+  assert.equal(foldTitle(createT('zh'), 'code', '', 3), '代码块 · 3 行')
+  assert.equal(foldTitle(createT('en'), 'code', '', 3), 'Code · 3 lines')
+})
+
+test('fold dictionary keys exist in both locales', () => {
+  for (const key of ['fold.code', 'fold.text', 'fold.aria']) {
+    assert.ok(zh[key], `zh missing ${key}`)
+    assert.ok(en[key], `en missing ${key}`)
+  }
 })
 
 test('detectBrowserLocale never throws outside a browser', () => {
