@@ -530,7 +530,7 @@ function firePaste(text) {
   return ev
 }
 
-test('a paste-storm of identical clipboard text attaches exactly one block (0.2.3)', () => {
+test('a paste-storm of identical clipboard text collapses in-burst but honors deliberate re-paste (0.2.5)', () => {
   const storm = globalThis.__pcb.__pasteStormForTests
   assert.ok(storm && typeof storm.seen === 'function', 'storm seam exposed')
   const sid = 'rs-storm'
@@ -554,29 +554,22 @@ test('a paste-storm of identical clipboard text attaches exactly one block (0.2.
   const plain = firePaste('hi')
   assert.equal(plain.prevented, false, 'non-block paste is not intercepted')
   assert.equal(controller.listFor(sid).length, 2)
-  // The original text pasted again, even with other content in between, is
-  // NOT a fresh intent while its chip is still attached (0.2.4).
-  const re = firePaste(text)
-  assert.equal(controller.listFor(sid).length, 2, 'an identical live block absorbs the re-paste')
-  assert.ok(re.prevented, 'duplicate pastes are consumed — raw text never falls through')
-  // The in-window repeat path still short-circuits ahead of the dedup.
+  // Re-paste of the same text once the burst window has passed is a FRESH
+  // intent (0.2.5): deliberate re-pasting gets its own block even though the
+  // first one is still attached. Only machine-paced in-burst repeats collapse.
   firePaste(text)
-  assert.equal(controller.listFor(sid).length, 2, 'in-window repeat is still suppressed')
-  // Slow re-dispatch past the window is suppressed too: the escaped tail of
-  // a storm must never mint a chip or move the caret mid-typing.
+  assert.equal(controller.listFor(sid).length, 3, 're-paste of identical text is a new block after the burst window')
+  // …its immediate repeat still collapses inside the window…
+  firePaste(text)
+  assert.equal(controller.listFor(sid).length, 3, 'in-window repeat is still suppressed')
+  // …and once the window expires, an identical re-paste is honored again.
   storm.lastAt = 0
   firePaste(text)
-  assert.equal(controller.listFor(sid).length, 2, 'out-of-window re-paste of an attached block is not a new intent')
-  assert.ok(controller.listFor(sid).some((b) => b.sourceText === text), 'sourceText recorded on the attached block')
-  // Chip gone (hand-deletion prunes the list) and the same text is fresh intent again.
-  controller.reconcile(sid, [], 'plain')
-  assert.equal(controller.listFor(sid).length, 0, 'chips gone: state pruned')
-  storm.lastAt = 0
-  firePaste(text)
-  assert.equal(controller.listFor(sid).length, 1, 're-paste after removal is honored again')
+  assert.equal(controller.listFor(sid).length, 4, 'after the window, re-pasting is a fresh intent')
+  assert.ok(controller.listFor(sid).filter((b) => b.sourceText === text).length >= 2, 'each deliberate re-paste records sourceText')
   // Distinct content is always honored, chip or no chip.
   firePaste('brand new content X\ncontent Y')
-  assert.equal(controller.listFor(sid).length, 2)
+  assert.equal(controller.listFor(sid).length, 5)
   globalThis.document.activeElement = null
   seat.remove()
 })

@@ -602,28 +602,6 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * Whether this session's composer still carries a LIVE block that was
-       * attached from this exact clipboard text (0.2.4 content-liveness
-       * dedup). "Live" = listed AND its chip occurrence is still in the
-       * published draft, so a removed, sent or pruned block stops matching
-       * and a deliberate re-paste works normally again.
-       */
-      hasLivePasteText(sessionId, text) {
-        const k = String(sessionId)
-        const entries = this.listFor(k)
-        if (!entries.length || typeof text !== 'string') return false
-        if (!entries.some((b) => b.sourceText === text)) return false
-        let shell
-        try {
-          shell = this.scope(k).shell
-        } catch (e) { return false } // session vanished — nothing is live
-        const input = shell.snapshot
-        if (!input) return false
-        return (input.occurrences || []).some((o) => o.source === SOURCE &&
-          entries.some((b) => b.id === o.ref && b.sourceText === text))
-      }
-
-      /**
        * Resolve a chip's rendered text (label in ANY locale — see
        * `parseBlockLabel`) back to its block. Prefers the insert-time label
        * index, then falls back to the (type, number) identity within the
@@ -1447,7 +1425,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       // Bump alongside package.json on every release — the load log is the
       // only proof of WHICH bundle generation the browser actually loaded.
-      try { console.log('[dsh-paste-code-block] client loaded v0.2.4') } catch (e) { /* noop */ }
+      try { console.log('[dsh-paste-code-block] client loaded v0.2.5') } catch (e) { /* noop */ }
 
       // Publish our dictionaries under the plugin namespace, then bind a
       // translator that always reflects the ACTIVE DSH language (Settings →
@@ -1636,22 +1614,20 @@ window.__ModuleLoader__.load({
         return () => style.remove()
       }, 'paste-code-block: styles')
 
-      // Paste-storm guard (0.2.3). External automation — a Tampermonkey
-      // AutoClicker, a clipboard bridge, IME glue, or a held-down Ctrl+V —
-      // can re-dispatch the SAME clipboard text dozens of times a second.
-      // Each accepted paste mints a new block, drags the caret to the draft
-      // end and re-renders the dock: that is the "the page jumps and my
-      // first typed character vanishes, and it keeps showing these" report,
-      // with the composer left stuffed with duplicate chips. Collapse runs
-      // of an identical clipboard text that arrive faster than a human can
-      // act into a single paste. Anything spaced beyond the window falls
-      // through to the content-liveness dedup in onPaste (0.2.4): text
-      // whose block is STILL attached is consumed without creating
-      // anything, so the escaped tail of a slow re-dispatch stream can
-      // never mint chips or drag the caret mid-typing. Only genuinely new
-      // intent — different text, or the old chip already removed or sent —
-      // is honored.
-      const STORM_WINDOW_MS = 500
+      // Paste-storm guard. External automation — a Tampermonkey AutoClicker,
+      // a clipboard bridge, IME glue, or a held-down Ctrl+V — can re-dispatch
+      // the SAME clipboard text dozens of times a second. Each accepted paste
+      // mints a new block, so a storm stuffs the composer with duplicate
+      // chips. Collapse runs of an identical clipboard text that arrive faster
+      // than a human can act into a single paste (a 1200 ms sliding window,
+      // refreshed on every matching event, so a held repeat stays suppressed
+      // while it continues). 0.2.4 added a content-liveness dedup that ALSO
+      // suppressed a re-paste of the same text while its block was still
+      // attached — that made "paste the same snippet twice" impossible, which
+      // users hit immediately. 0.2.5 reverts that: identical text pasted after
+      // the burst window is a fresh intent and gets its own block. Only
+      // machine-paced repeats within the window are collapsed.
+      const STORM_WINDOW_MS = 1200
       const pasteStorm = {
         lastText: '',
         lastAt: 0,
@@ -1684,21 +1660,6 @@ window.__ModuleLoader__.load({
           ev.preventDefault()
           ev.stopPropagation()
           console.log('[dsh-paste-code-block] storm paste ignored (<' + STORM_WINDOW_MS + 'ms repeat)')
-          return
-        }
-        // Content-liveness dedup (0.2.4). The window only collapses IN-BURST
-        // repeats; an automation / clipboard bridge / IME glue, or a late
-        // dsh-vision-router image-paste replay, can re-dispatch the SAME text
-        // slower than the window, and every escaped paste mints a fresh chip,
-        // rewrites the draft and drags the caret — the "page bounces every few
-        // keystrokes" report. Time is only a proxy for intent; the invariant
-        // is content: while an attached block still carries this exact
-        // clipboard text, re-pasting it is not a new intent. Remove or send
-        // the block and the paste is honored again.
-        if (controller.hasLivePasteText(sid, text)) {
-          ev.preventDefault()
-          ev.stopPropagation()
-          console.log('[dsh-paste-code-block] duplicate paste ignored (identical block still attached)')
           return
         }
         block.sourceText = text
