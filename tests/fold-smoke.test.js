@@ -384,13 +384,16 @@ test('stale hosts are swept when React replaces the run underneath them', () => 
 
 // 5. draft re-seed recovery (workspace switch / page reload)
 test('recovery re-attaches chips lost to a text-only draft re-seed (memory path)', () => {
-  makeShell('rs-mem')
+  const pre = makeShell('rs-mem')
+  pre.snapshot.draft = '帮我看看' // the user typed this before pasting the blocks
   assert.ok(controller.attach('rs-mem', { lang: 'python', content: 'a = 1\nprint(a)', lines: ['a = 1', 'print(a)'], isCode: true }))
   assert.ok(controller.attach('rs-mem', { lang: 'text', content: 'hello\nworld', lines: ['hello', 'world'], isCode: false }))
   controller.mirrorNow('rs-mem')
   assert.ok(localStorage.getItem('dsh-pcb-recovery.rs-mem'), 'mirror written')
   // Switch away and back: the editor comes up seeded from plain text — one
-  // stray U+200B per lost chip, no occurrences.
+  // stray U+200B per lost chip, no occurrences. The draft matches the last
+  // one observed (the persistence replay), so the typing-window guard lets
+  // the restore through.
   const seeded = makeShell('rs-mem')
   seeded.snapshot.draft = '帮我看看\u200B\u200B'
   assert.equal(controller.recover('rs-mem', seeded.snapshot), true)
@@ -404,12 +407,15 @@ test('recovery re-attaches chips lost to a text-only draft re-seed (memory path)
 })
 
 test('recovery restores from the localStorage mirror when memory is gone (reload)', () => {
-  makeShell('rs-mir')
+  const pre = makeShell('rs-mir')
+  pre.snapshot.draft = 'abc'
   controller.attach('rs-mir', { lang: '', content: 'plain pasted content\nsecond line', lines: ['plain pasted content', 'second line'], isCode: true })
   controller.mirrorNow('rs-mir')
-  // Page reload: the controller's maps start empty for this session.
+  // Page reload: a FRESH controller — this session's memory is gone entirely,
+  // including the typing-window fingerprints.
   controller.list.delete('rs-mir')
   controller.used.delete('rs-mir')
+  controller.lastInput.delete('rs-mir')
   const seeded = makeShell('rs-mir')
   seeded.snapshot.draft = 'abc\u200B'
   assert.equal(controller.recover('rs-mir', seeded.snapshot), true)
@@ -439,12 +445,39 @@ test('a send attempt drops the mirror', async () => {
   assert.equal(localStorage.getItem('dsh-pcb-recovery.rs-send'), null)
 })
 
-test('stray markers alone are stripped even when nothing is restorable', () => {
+test('a stray marker with nothing restorable NEVER rewrites the draft (0.2.2 typing bug)', () => {
   const seeded = makeShell('rs-orphan')
   seeded.snapshot.draft = 'lonely-zwsp\u200B'
-  assert.equal(controller.recover('rs-orphan', seeded.snapshot), true)
-  assert.equal(seeded.snapshot.draft, 'lonely-zwsp')
+  // 0.2.1 stripped it via setDraft — a whole-document rewrite that destroyed
+  // live IME compositions (first typed character lost, view bounced). External
+  // invisible copy is not ours to sweep; leave the draft exactly as it is.
+  assert.equal(controller.recover('rs-orphan', seeded.snapshot), false)
+  assert.equal(seeded.snapshot.draft, 'lonely-zwsp\u200B', 'draft untouched')
+  assert.equal(seeded.snapshot.draftRev, 0, 'no setDraft fired')
   assert.equal(controller.listFor('rs-orphan').length, 0)
+})
+
+test('typing window: a draft that moved since the last pass is never rewritten (0.2.2)', () => {
+  makeShell('rs-type')
+  // Fresh boot: last pass saw the draft WITHOUT the trailing char; the
+  // re-seed signature (stray ZWSP + dead occurrences) must not fire in the
+  // middle of typing — the draft has moved.
+  assert.equal(controller.recover('rs-type', { draft: '帮我看看\u200B', occurrences: [], phase: 'plain' }), false, 'boot pass records the draft, nothing restorable')
+  controller.attach('rs-type', { lang: 'text', content: 'kept block', lines: ['kept block'], isCode: false })
+  const typed = { draft: '帮我看看\u200B好的', occurrences: [], phase: 'plain' } // occurrence view gone stale
+  assert.equal(controller.recover('rs-type', typed), false, 'moved draft = live typing — do not touch')
+  assert.equal(typed.draft, '帮我看看\u200B好的', 'draft untouched')
+  // The same (unmoved) draft on a later pass still restores: re-seed semantics intact.
+  assert.equal(controller.recover('rs-type', { draft: typed.draft, occurrences: [], phase: 'plain' }), true)
+})
+
+test('hand-deleting the last chip drops the mirror synchronously (no stale resurrection)', () => {
+  makeShell('rs-prune')
+  controller.attach('rs-prune', { lang: 'text', content: 'deleted block', lines: ['deleted block'], isCode: false })
+  assert.ok(localStorage.getItem('dsh-pcb-recovery.rs-prune'), 'mirror written by attach')
+  controller.reconcile('rs-prune', [], 'plain') // Backspace over the chip: occurrence gone
+  assert.equal(controller.listFor('rs-prune').length, 0, 'pruned')
+  assert.equal(localStorage.getItem('dsh-pcb-recovery.rs-prune'), null, 'mirror dropped in the same breath')
 })
 
 test('workspace carry-over: a moved draft pulls its blocks from the donor session', () => {

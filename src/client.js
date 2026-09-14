@@ -588,6 +588,15 @@ window.__ModuleLoader__.load({
         this.refIndex.set(block.id, { sessionId: k, block })
         this.labelIndex.set(block.label, block.id)
         this.publish(sessionId)
+        // The shell just rewrote the draft (chip + placeholder char); until
+        // the next dock pass runs, this is the session's ground truth. Keep
+        // the typing-window fingerprint and the carry-over donor match fresh
+        // so the pass right after a paste cannot mistake the new draft for a
+        // rebuild.
+        try {
+          const after = this.scope(k).shell.snapshot
+          if (after && typeof after.draft === 'string') this.lastInput.set(k, after.draft)
+        } catch (e) { /* session vanished — the next pass re-observes */ }
         this.mirrorNow(k) // attach is a key moment — persist synchronously
         return true
       }
@@ -793,6 +802,12 @@ window.__ModuleLoader__.load({
         if (next.length > 0) this.list.set(k, next)
         else this.list.delete(k)
         this.publish(sessionId)
+        // Hand-deletion is final. Persist the pruned state synchronously so a
+        // later reload/carry-over cannot resurrect a deleted chip from a
+        // mirror the draft has already outlived — and so the recovery
+        // restore-path can never fire off invisible external residue once the
+        // list for this session is empty.
+        this.mirrorNow(k)
       }
 
       restoreFailed(sessionId) {
@@ -849,16 +864,20 @@ window.__ModuleLoader__.load({
        * carry-over is matched to its donor by the exact draft the donor last
        * published — unique match only, no guessing. Blocks come from memory
        * first (same tab), then this session's mirror, then the donor's memory
-       * or mirror. The stray markers are always stripped so a later send
-       * cannot carry invisible residue.
+       * or mirror. A stray U+200B that belongs to NO restorable block is
+       * ordinary invisible copy from an external app (WeChat, web pages):
+       * never restorable, cosmetic — it is left exactly where the user put
+       * it. Sweeping it used to rewrite the whole draft mid-typing and is
+       * retired in 0.2.2 (see the typing-window guard below).
        *
        * @param sessionId - session whose composer just (re)mounted.
        * @param snapshot - live input state ({draft, occurrences, phase}).
-       * @returns whether the draft was rewritten (restored or cleaned up).
+       * @returns whether the draft was rewritten by a real restore.
        */
       recover(sessionId, snapshot) {
         const k = String(sessionId)
         if (!snapshot || typeof snapshot.draft !== 'string') return false
+        const prior = this.lastInput.get(k)
         this.lastInput.set(k, snapshot.draft)
         if (this.serializing.has(k)) return false
         if (snapshot.phase && snapshot.phase !== 'plain') return false
@@ -866,6 +885,19 @@ window.__ModuleLoader__.load({
         const draft = snapshot.draft
         const strays = (draft.match(/\u200B/g) || []).length
         if (strays === 0) return false
+        // Typing-window guard. Every committed keystroke re-runs this pass, so
+        // a draft that MOVED since the pass before it is live typing, not a
+        // text-only re-seed — and a real restore rewrites the whole document
+        // via setDraft: caret to the end, chips re-appended, an in-flight IME
+        // composition destroyed (0.2.2 bug: the first character typed was
+        // eaten and the view bounced once, again and again). Only a draft
+        // IDENTICAL to the last one observed for this session — or one this
+        // page view has never seen, or only ever saw the composer hydrate
+        // through while empty (fresh-boot re-seed) — can carry the rebuild
+        // signature. The empty-prior escape is sealed from the other side by
+        // reconcile pruning synchronously dropping the mirror: with nothing
+        // restorable on record, a moved-from-empty pass restores nothing.
+        if (prior && prior !== draft) return false
         let shell
         try {
           shell = this.scope(k).shell
@@ -896,15 +928,19 @@ window.__ModuleLoader__.load({
             origin = 'carry-over (mirror)'
           }
         }
+        if (sources.length === 0) {
+          // Nothing to restore — invisible external residue (or the residue of
+          // a deliberately deleted chip whose node already carries none of our
+          // state). NEVER rewrite the draft for it: rewriting drops the caret,
+          // destroys an in-flight IME composition and re-seeds stale text over
+          // whatever the user typed in the meantime (0.2.2).
+          return false
+        }
         try {
           shell.setDraft(draft.replace(/\u200B/g, ''))
         } catch (e) {
           console.warn('[dsh-pcb] recovery: draft rewrite failed', e)
           return false
-        }
-        if (sources.length === 0) {
-          console.log('[dsh-pcb] recovery: stripped stray chip markers, nothing to restore')
-          return true
         }
         // The draft — and with it the blocks — now belongs to this session:
         // forget the (possibly moved) bookkeeping; attach() re-derives ids,

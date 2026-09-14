@@ -263,6 +263,21 @@ sent 代码块 chip could reappear in the transcript as 文本块.)
 
 ## 13. Draft rebuild recovery (0.2.1)
 
+**Typing-window guard and retired hygiene (0.2.2).** The recovery rewrite is a whole-
+document `setDraft`: the caret drops at the end and an in-flight IME composition is
+destroyed. Run in the middle of typing, that ate the user's first character and bounced
+the view on every pass (reported). Two keystroke-time paths existed: sweeping a stray
+U+200B that belonged to no restorable block (external invisible copy from WeChat / web
+pages — the signature is NOT exclusive to rebuilds after all), and restoring blocks while
+the draft had already moved past the re-seeded text. The hygiene path is retired outright:
+external residue is left exactly where the user put it. Both paths now share one gate —
+`recover()` only acts when the draft is IDENTICAL to the last draft observed for that
+session in this page view (or was never observed: fresh boot, or the composer only ever
+seen hydrating empty). A draft that MOVED between passes is live typing, never a rebuild.
+`attach()` records the shell's post-insertion draft as that fingerprint immediately, and
+the reconcile prune drops the mirror synchronously, so a hand-deleted block cannot be
+resurrected from stale mirror data through the empty-prior window.
+
 Two DSH paths strand pasted blocks mid-draft, and both share one signature. (a) A page
 reload re-seeds the composer from DSH's persisted per-session draft
 (`dsh.conversation.<sid>`), which is **plain text** — Lexical chips cannot round-trip
@@ -272,7 +287,7 @@ over* to the target workspace's blank session (`inputHub`: `next.setDraft(from.s
 state do not, so blocks were silently orphaned under the old session id (user-reported).
 Typed prose comes back either way; the blocks did not.
 
-The signature is exact: every chip contributes exactly one U+200B to the clipboard
+The signature — as 0.2.1 read it: every chip contributes exactly one U+200B to the clipboard
 projection and nothing scrubs it from persisted/carried text (DSH's placeholder-stripping
 regex covers private-use chars and U+FFFC, not ZWSPs). Stray U+200Bs with **no** live
 occurrence of ours can therefore only mean the draft was rebuilt from text; conversely
@@ -284,9 +299,9 @@ and resolves blocks in this order: own-session memory → the session's own loca
 mirror → **carry-over donor**: the unmounted session whose last published draft equals the
 re-seeded text character for character (the mirror stores that same fingerprint, so the
 donor is even found after a reload wiped memory) → nothing. An ambiguous fingerprint aborts
-the donor step — no guessing. On a hit the mirror moves to the new sid; with nothing to
-restore, the stray markers are merely stripped so a later send cannot carry invisible
-residue. The mirror holds just the block payloads plus that draft fingerprint, is written
+the donor step — no guessing. On a hit the mirror moves to the new sid. (0.2.1 also stripped
+strays when nothing could be restored; the typing-window guard above retired that — see the
+0.2.2 note.) The mirror holds just the block payloads plus that draft fingerprint, is written
 synchronously on attach (and debounced on detail-card edits), drops on a send attempt, and
 expires after two weeks. The recovery pass then *skips* its reconcile — the snapshot it
 would reconcile against is stale; the draft mutation bumps `draftRev` and the next pass
