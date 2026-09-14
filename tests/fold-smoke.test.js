@@ -132,12 +132,18 @@ function queryAll(doc, sel, root) {
 const doc = { body: null, head: null }
 doc.body = new El('body', doc)
 doc.head = new El('head', doc)
+const docListeners = {}
+globalThis.Element = El // client.js guards listeners with `instanceof Element`
 globalThis.document = {
   body: doc.body,
   head: doc.head,
   createElement: (tag) => new El(tag, doc),
-  addEventListener() {},
-  removeEventListener() {},
+  activeElement: null,
+  addEventListener(type, fn) { (docListeners[type] ||= []).push(fn) },
+  removeEventListener(type, fn) {
+    const l = docListeners[type]
+    if (l) { const i = l.indexOf(fn); if (i >= 0) l.splice(i, 1) }
+  },
   querySelectorAll: (sel) => queryAll(doc, sel),
 }
 Object.defineProperty(globalThis, 'navigator', {
@@ -510,6 +516,56 @@ test('carry-over survives a page reload via the mirrored donor draft', () => {
   assert.equal(controller.listFor('rs-d').length, 1)
   assert.equal(controller.listFor('rs-d')[0].content, 'reloaded block')
   assert.equal(localStorage.getItem('dsh-pcb-recovery.rs-c'), null)
+})
+
+// ---------------- paste-storm guard (0.2.3) ----------------
+function firePaste(text) {
+  const ev = {
+    clipboardData: { getData: (kind) => (kind === 'text/plain' ? text : '') },
+    prevented: false,
+    preventDefault() { ev.prevented = true },
+    stopPropagation() {},
+  }
+  for (const fn of (docListeners.paste || []).slice()) fn(ev)
+  return ev
+}
+
+test('a paste-storm of identical clipboard text attaches exactly one block (0.2.3)', () => {
+  const storm = globalThis.__pcb.__pasteStormForTests
+  assert.ok(storm && typeof storm.seen === 'function', 'storm seam exposed')
+  const sid = 'rs-storm'
+  makeShell(sid)
+  const seat = new El('div', doc)
+  seat.setAttribute('data-dsh-pcb', '')
+  seat.setAttribute('data-dsh-pcb-session', sid)
+  doc.body.appendChild(seat)
+  globalThis.document.activeElement = seat
+  assert.ok((docListeners.paste || []).length >= 1, 'apply() registered the document paste capture')
+  const text = 'storm line one\nstorm line two\nstorm line three'
+  const events = []
+  for (let i = 0; i < 12; i += 1) events.push(firePaste(text))
+  assert.equal(controller.listFor(sid).length, 1, 'a held/automated repeat collapses into one paste')
+  assert.ok(events.every((e) => e.prevented), 'suppressed pastes are consumed — raw text never falls through')
+  // Different content is honored even back-to-back, and becomes the new
+  // "last paste" the guard compares against.
+  firePaste('different content A\ndifferent content B')
+  assert.equal(controller.listFor(sid).length, 2, 'distinct clipboard text is never a storm')
+  // Non-block text keeps DSH's native path untouched.
+  const plain = firePaste('hi')
+  assert.equal(plain.prevented, false, 'non-block paste is not intercepted')
+  assert.equal(controller.listFor(sid).length, 2)
+  // The original text pasted again is a fresh intent after the switch…
+  firePaste(text)
+  assert.equal(controller.listFor(sid).length, 3)
+  // …its immediate repeat collapses inside the window…
+  firePaste(text)
+  assert.equal(controller.listFor(sid).length, 3, 'in-window repeat is still suppressed')
+  // …and once the window expires, an identical re-paste is honored again.
+  storm.lastAt = 0
+  firePaste(text)
+  assert.equal(controller.listFor(sid).length, 4, 'after the window, re-pasting is a fresh intent')
+  globalThis.document.activeElement = null
+  seat.remove()
 })
 
 // 6. dispose hands the transcript back

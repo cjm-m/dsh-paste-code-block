@@ -278,6 +278,19 @@ seen hydrating empty). A draft that MOVED between passes is live typing, never a
 the reconcile prune drops the mirror synchronously, so a hand-deleted block cannot be
 resurrected from stale mirror data through the empty-prior window.
 
+**Paste-storm guard (0.2.3).** Even with the typing-window guard deployed (load log
+`client loaded v0.2.2` verified live), the console showed the SAME clipboard text (571
+chars) intercepted dozens of times in seconds — an external automation (a Tampermonkey
+AutoClicker was running on the page) re-dispatching paste. Each accepted paste inserts a
+chip and re-renders the dock, so a storm reproduces the exact bounce-and-eat-the-first-
+character experience through a different door. Identical clipboard text arriving faster
+than a human can act now collapses into one paste (`pasteStorm.seen`, 500 ms sliding
+window refreshed on every matching event, so a held repeat stays suppressed while it
+continues); suppressed events are still `preventDefault`ed so raw text never falls
+through to the composer, and distinct texts or spaced-out deliberate re-pastes are
+honored. The plugin cannot suppress the automation itself — users hitting this should
+disable AutoClicker-style userscripts on the DSH page.
+
 Two DSH paths strand pasted blocks mid-draft, and both share one signature. (a) A page
 reload re-seeds the composer from DSH's persisted per-session draft
 (`dsh.conversation.<sid>`), which is **plain text** — Lexical chips cannot round-trip

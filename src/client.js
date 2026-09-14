@@ -1425,7 +1425,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       // Bump alongside package.json on every release — the load log is the
       // only proof of WHICH bundle generation the browser actually loaded.
-      try { console.log('[dsh-paste-code-block] client loaded v0.2.2') } catch (e) { /* noop */ }
+      try { console.log('[dsh-paste-code-block] client loaded v0.2.3') } catch (e) { /* noop */ }
 
       // Publish our dictionaries under the plugin namespace, then bind a
       // translator that always reflects the ACTIVE DSH language (Settings →
@@ -1614,6 +1614,31 @@ window.__ModuleLoader__.load({
         return () => style.remove()
       }, 'paste-code-block: styles')
 
+      // Paste-storm guard (0.2.3). External automation — a Tampermonkey
+      // AutoClicker, a clipboard bridge, IME glue, or a held-down Ctrl+V —
+      // can re-dispatch the SAME clipboard text dozens of times a second.
+      // Each accepted paste mints a new block, drags the caret to the draft
+      // end and re-renders the dock: that is the "the page jumps and my
+      // first typed character vanishes, and it keeps showing these" report,
+      // with the composer left stuffed with duplicate chips. Collapse runs
+      // of an identical clipboard text that arrive faster than a human can
+      // act into a single paste; anything spaced beyond the window is
+      // honored normally.
+      const STORM_WINDOW_MS = 500
+      const pasteStorm = {
+        lastText: '',
+        lastAt: 0,
+        // True when this text is the tail of a storm; every call refreshes
+        // the window, so a held repeat stays suppressed while it continues.
+        seen(text, now) {
+          const dup = text === this.lastText && now - this.lastAt < STORM_WINDOW_MS
+          this.lastText = text
+          this.lastAt = now
+          return dup
+        },
+      }
+      exports.__pasteStormForTests = pasteStorm
+
       // Turn qualifying pastes into boxed inline chips.
       const onPaste = (ev) => {
         const clip = ev.clipboardData
@@ -1626,6 +1651,14 @@ window.__ModuleLoader__.load({
         if (!sid) return
         const block = parseBlock(text)
         if (!block) { console.log('[dsh-paste-code-block] paste NOT block', text.length); return }
+        if (pasteStorm.seen(text, Date.now())) {
+          // Consume the event (never let the raw text fall through to the
+          // composer) but create nothing.
+          ev.preventDefault()
+          ev.stopPropagation()
+          console.log('[dsh-paste-code-block] storm paste ignored (<' + STORM_WINDOW_MS + 'ms repeat)')
+          return
+        }
         console.log('[dsh-paste-code-block] intercept', block.isCode ? 'code' : 'text', block.lines.length, 'lang=', block.lang)
         ev.preventDefault()
         ev.stopPropagation()
