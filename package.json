@@ -1,6 +1,6 @@
 {
   "name": "dsh-paste-code-block",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Cherry Studio-style paste for DSH Web: pasted text/code becomes a bordered, collapsible, language-tagged card with localized names (中文/English) and a one-click remove button; restored as a fenced code block on send — and folded back into collapsed, expandable cards in the conversation.",
   "license": "MIT",
   "author": "DSH paste-code-block contributors",

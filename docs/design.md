@@ -252,3 +252,44 @@ every run — the transcript hands back clean.
 fold → marker/card/prose structure, steering rows, non-fenced messages untouched, retitle
 across locale switches with open-state kept, text edits re-fold and unfold, orphan sweep,
 and dispose restoration.
+
+**Bare fences are code (0.2.1).** Card type follows the composer round-trip convention: a
+plain-text block always serializes as an explicit ` ```text ` fence while a code block whose
+language was not detected serializes as a **bare** ` ``` ` fence — so only an explicit `text`
+info string folds as a 文本块, and a bare fence folds as 代码块, re-guessing a language from
+the body for the title (`python · 2 行`, else `代码块 · N 行`). Manually typed bare fences
+follow the same rule; that is also the CommonMark reading. (0.2.0 shipped the inverse and a
+sent 代码块 chip could reappear in the transcript as 文本块.)
+
+## 13. Draft rebuild recovery (0.2.1)
+
+Two DSH paths strand pasted blocks mid-draft, and both share one signature. (a) A page
+reload re-seeds the composer from DSH's persisted per-session draft
+(`dsh.conversation.<sid>`), which is **plain text** — Lexical chips cannot round-trip
+through it (§7). (b) A workspace switch on the new-session page *carries the draft text
+over* to the target workspace's blank session (`inputHub`: `next.setDraft(from.snapshot
+.draft)`, then `from.setDraft("")`) — prose follows the composer, chips and controller
+state do not, so blocks were silently orphaned under the old session id (user-reported).
+Typed prose comes back either way; the blocks did not.
+
+The signature is exact: every chip contributes exactly one U+200B to the clipboard
+projection and nothing scrubs it from persisted/carried text (DSH's placeholder-stripping
+regex covers private-use chars and U+FFFC, not ZWSPs). Stray U+200Bs with **no** live
+occurrence of ours can therefore only mean the draft was rebuilt from text; conversely
+deleting a chip — ✕, Backspace, or prune — removes its ZWSP together with the node, so
+deliberate deletion never looks like a rebuild and cannot be "resurrected".
+
+`BlockController.recover()` runs in the dock's reconcile effect, ahead of the reconcile,
+and resolves blocks in this order: own-session memory → the session's own localStorage
+mirror → **carry-over donor**: the unmounted session whose last published draft equals the
+re-seeded text character for character (the mirror stores that same fingerprint, so the
+donor is even found after a reload wiped memory) → nothing. An ambiguous fingerprint aborts
+the donor step — no guessing. On a hit the mirror moves to the new sid; with nothing to
+restore, the stray markers are merely stripped so a later send cannot carry invisible
+residue. The mirror holds just the block payloads plus that draft fingerprint, is written
+synchronously on attach (and debounced on detail-card edits), drops on a send attempt, and
+expires after two weeks. The recovery pass then *skips* its reconcile — the snapshot it
+would reconcile against is stale; the draft mutation bumps `draftRev` and the next pass
+reconciles real occurrences. Restored chips get re-derived labels and numbers, so a
+restored draft is indistinguishable from one that never left. Mirror writes are best
+effort: private mode / quota only lose reload durability, never the feature itself.

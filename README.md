@@ -28,7 +28,8 @@ Copying a 200‑line stack trace, an API response, or a long log into a chat inp
 - 🈯 **Localized names** — chips are named in the current DSH language: `代码块 1` / `Code #1`, `文本块 N` / `Text #N`. A leading glyph and tint tells the two apart at a glance — `</>` blue for code, `Aa` gray for text. Switching **Settings → Language** live-retitles every chip.
 - × **One-click remove** — every chip carries its own `×` delete button (the detail card has one too); a removed number is recycled immediately.
 - 📤 **Fenced restore on send** — each card expands back into a ```` ```lang … ``` ```` block when you send; a failed send automatically refills the input.
-- 📦 **Folded after send** — sent blocks keep folding in the transcript: every fenced block inside your own messages renders as a collapsed card (`python · 128 行` / `python · 128 lines`). Click the header to expand, again to collapse; the card's copy button grabs the original fenced text verbatim.
+- 📦 **Folded after send** — sent blocks keep folding in the transcript: every fenced block inside your own messages renders as a collapsed card (`python · 128 行` / `python · 128 lines`). Click the header to expand, again to collapse; the card's copy button grabs the original fenced text verbatim. Bare ```` ``` ```` fences fold as code (only an explicit ```` ```text ```` folds as a text block).
+- 💾 **Mid-draft safe** — DSH persists a composer draft as plain text, so pasted blocks are automatically re-attached when the composer is rebuilt (workspace switch on the new-session page, page reload); hand-deleted blocks are never "resurrected".
 - 🔢 **Smart numbering** — code and text count apart; the smallest free number is always reused.
 - 📱 **Every surface** — pure client plugin; works on desktop & mobile web, follows light/dark themes.
 
@@ -81,13 +82,14 @@ Detection threshold: **contains a newline / ≥ 2 lines / length ≥ 96 / indent
 - Deleting one block never touches the others, and removal is an ordinary editor edit — `Ctrl+Z` brings it back.
 - Creating a block leaves **no stray space**: DSH appends a separating space after a freshly inserted chip, and the plugin removes exactly that one character, so text typed after a block does not start with a space and pasting several blocks never piles spaces into the message. Spaces you typed yourself are never touched by pasting or deleting.
 - Post-send folding is **display-only**: it restyles your own message bubbles (and steering rows / the send echo) in the DOM. Stored messages are never modified, the bubble's own copy / edit / delete bar keeps working on the original text, and assistant messages are left alone.
+- Draft-rebuild recovery keeps a small localStorage mirror (block payloads plus a draft fingerprint; written while you edit, cleared when you send, expired after two weeks). If the browser blocks local storage (private mode), blocks still survive a same-tab workspace switch from memory — just not a full page reload.
 
 ## Project layout
 
 ```
 dsh-paste-code-block/
 ├── src/
-│   ├── client.js       # Web (browser) half — paste capture, chips, detail card, × delete, sent-message fold
+│   ├── client.js       # Web (browser) half — paste capture, chips, detail card, × delete, sent-message fold, draft-rebuild recovery
 │   ├── index.js        # Host (node) half — intentionally empty (pure UI plugin)
 │   ├── parse.js        # Pure block-detection + fence-splitting logic (canonical, unit-tested)
 │   └── i18n.js         # Locale dictionaries, label & fold-title builders (canonical, unit-tested)
@@ -96,7 +98,7 @@ dsh-paste-code-block/
 │   ├── i18n.test.js      # node:test unit tests for src/i18n.js
 │   └── fold-smoke.test.js # end-to-end fold scan against a DOM shim (runs the real client bundle)
 ├── docs/
-│   ├── design.md       # Design rationale (numbering, anchors, codec, i18n, chip ×, sent-message fold)
+│   ├── design.md       # Design rationale (numbering, anchors, codec, i18n, chip ×, sent-message fold, draft-rebuild recovery)
 │   └── images/         # README mockups (PNG + editable SVG sources)
 ├── cordis.patch.yml    # DSH bundle patch declaring the host plugin
 ├── package.json        # Package + DSH plugin manifest

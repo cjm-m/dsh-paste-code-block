@@ -328,6 +328,88 @@ window.__ModuleLoader__.load({
       return segments
     }
 
+    // ===== Recovery mirror (draft re-seed after workspace switch / reload) ===
+    // DSH persists a session's composer draft as PLAIN TEXT
+    // (`dsh.conversation.<sid>` in localStorage) and re-seeds the editor from
+    // it — but Lexical chip nodes cannot round-trip through text (design.md
+    // §7), so switching workspaces mid-draft left every pasted block behind:
+    // the seeded draft keeps only one invisible U+200B per lost chip. The
+    // plugin therefore mirrors its block CONTENT to localStorage itself and
+    // re-attaches the chips when it recognizes that stray-ZWSP signature
+    // (BlockDock mount effect → BlockController.recover). Intentional chip
+    // deletion removes the ZWSPs along with the nodes, so it never looks
+    // like a re-seed; the mirror clears itself on send and once no blocks
+    // remain, and stale entries expire after two weeks.
+    const RECOVERY_PREFIX = 'dsh-pcb-recovery.'
+    const RECOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000
+    const RECOVERY_MAX_CHARS = 3_000_000
+    const RECOVERY_MAX_DRAFT = 200_000
+
+    function recoverySave(sid, blocks, draftText) {
+      const key = RECOVERY_PREFIX + sid
+      try {
+        if (!blocks || blocks.length === 0) { localStorage.removeItem(key); return }
+        const draft = typeof draftText === 'string' && draftText.length <= RECOVERY_MAX_DRAFT ? draftText : ''
+        const json = JSON.stringify({ at: Date.now(), draft, blocks })
+        if (json.length > RECOVERY_MAX_CHARS) { console.warn('[dsh-pcb] draft too large to mirror; chips will not survive a reload'); return }
+        localStorage.setItem(key, json)
+      } catch (e) { /* quota / private mode: best effort */ }
+    }
+
+    function recoveryLoad(sid) {
+      const key = RECOVERY_PREFIX + sid
+      try {
+        const raw = localStorage.getItem(key)
+        if (!raw) return null
+        let data = null
+        try { data = JSON.parse(raw) } catch (e) { data = null }
+        if (!data || typeof data.at !== 'number' || Date.now() - data.at > RECOVERY_TTL_MS) { localStorage.removeItem(key); return null }
+        return data
+      } catch (e) { return null }
+    }
+
+    function recoveryClear(sid) {
+      try { localStorage.removeItem(RECOVERY_PREFIX + sid) } catch (e) { /* noop */ }
+    }
+
+    /**
+     * Mirror-side carry-over donor: a store whose mirrored draft matches the
+     * re-seeded one exactly and still holds blocks (after a page reload there
+     * is no live memory to match against). Returns { sid, blocks } on a
+     * UNIQUE match, null when absent or ambiguous.
+     */
+    function recoveryScanDonor(targetSid, draft) {
+      try {
+        let hit = null
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = localStorage.key(i)
+          if (!key || !key.startsWith(RECOVERY_PREFIX)) continue
+          const sid = key.slice(RECOVERY_PREFIX.length)
+          if (sid === targetSid) continue
+          const data = recoveryLoad(sid)
+          if (!data || data.draft !== draft || !Array.isArray(data.blocks)) continue
+          if (!data.blocks.some((b) => b && typeof b.content === 'string' && b.content !== '')) continue
+          if (hit) return null // ambiguous — refuse to guess
+          hit = { sid, blocks: data.blocks }
+        }
+        return hit
+      } catch (e) { return null }
+    }
+
+    function recoveryPruneExpired() {
+      try {
+        const doomed = []
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const k = localStorage.key(i)
+          if (!k || !k.startsWith(RECOVERY_PREFIX)) continue
+          let at = 0
+          try { at = (JSON.parse(localStorage.getItem(k) || '{}').at) || 0 } catch (e) { /* fall through */ }
+          if (!at || Date.now() - at > RECOVERY_TTL_MS) doomed.push(k)
+        }
+        for (const k of doomed) localStorage.removeItem(k)
+      } catch (e) { /* noop */ }
+    }
+
     // ===== Draft controller ==================================================
     class BlockController {
       /**
@@ -348,6 +430,8 @@ window.__ModuleLoader__.load({
         this.expiry = new Map()
         this.serializing = new Set()
         this.listeners = new Map()
+        this.recoverTimer = new Map() // sid -> debounce handle for the recovery mirror
+        this.lastInput = new Map() // sid -> draft text seen by the last recover() pass
         this.counter = 0
       }
 
@@ -504,6 +588,7 @@ window.__ModuleLoader__.load({
         this.refIndex.set(block.id, { sessionId: k, block })
         this.labelIndex.set(block.label, block.id)
         this.publish(sessionId)
+        this.mirrorNow(k) // attach is a key moment — persist synchronously
         return true
       }
 
@@ -629,6 +714,7 @@ window.__ModuleLoader__.load({
         for (const [label, r] of this.labelIndex) if (r === ref) this.labelIndex.delete(label)
         this.freeLabel(sessionId, entry.type, entry.labelNumber)
         this.publish(sessionId)
+        this.mirror(k)
       }
 
       /** Update a block's content while editing it in the detail card. */
@@ -637,23 +723,31 @@ window.__ModuleLoader__.load({
         if (!record) return
         record.block.content = content
         record.block.lines = content.split(/\r?\n/)
+        this.mirror(record.sessionId)
       }
 
       clearInFlight(sessionId) {
         const k = String(sessionId)
         const expiry = this.expiry.get(k)
         if (expiry) { clearTimeout(expiry); this.expiry.delete(k) }
+        const had = this.inFlight.has(k)
         for (const b of this.inFlight.get(k) || []) {
           this.refIndex.delete(b.id)
           this.freeLabel(sessionId, b.type, b.labelNumber)
           for (const [label, r] of this.labelIndex) if (r === b.id) this.labelIndex.delete(label)
         }
         this.inFlight.delete(k)
+        if (had) this.mirrorNow(k)
       }
 
       markSerializing(ref) {
         const record = this.refIndex.get(ref)
-        if (record && !this.serializing.has(record.sessionId)) this.serializing.add(record.sessionId)
+        if (record && !this.serializing.has(record.sessionId)) {
+          this.serializing.add(record.sessionId)
+          // A send is starting: the content leaves the draft, the mirror may go.
+          // (A failed send re-mirrors via restoreFailed.)
+          recoveryClear(record.sessionId)
+        }
       }
 
       async serialize(ref) {
@@ -720,10 +814,147 @@ window.__ModuleLoader__.load({
         }
         if (survived.length) this.list.set(k, [...this.listFor(k), ...survived])
         this.publish(sessionId)
+        if (survived.length) this.mirror(k)
+      }
+
+      // ----- recovery mirror -------------------------------------------------
+      /** Debounced persistence of the session's current block payloads. */
+      mirror(sessionId) {
+        const k = String(sessionId)
+        const prev = this.recoverTimer.get(k)
+        if (prev) clearTimeout(prev)
+        this.recoverTimer.set(k, setTimeout(() => {
+          this.recoverTimer.delete(k)
+          this.mirrorNow(k)
+        }, 250))
+      }
+
+      mirrorNow(sessionId) {
+        const k = String(sessionId)
+        const t = this.recoverTimer.get(k)
+        if (t) { clearTimeout(t); this.recoverTimer.delete(k) }
+        recoverySave(k, this.listFor(k).map((b) => ({ isCode: !!b.isCode, lang: b.lang || '', content: b.content })), this.lastInput.get(k))
+      }
+
+      /**
+       * Restore the chips a text-only draft rebuild dropped. Two DSH paths
+       * strand them: (a) the persisted per-session draft re-seeds the composer
+       * after a page reload, and (b) a workspace switch on the new-session
+       * page CARRIES the draft plain-text to the target workspace's blank
+       * session (inputHub: next.setDraft(from.snapshot.draft)) — the chips,
+       * which are Lexical nodes plus controller state, never move. Both leave
+       * the same signature: stray U+200Bs (every chip contributes exactly one,
+       * and removing a chip removes its ZWSP too) with no live occurrence of
+       * ours. Deliberate deletion therefore never looks like a rebuild; and a
+       * carry-over is matched to its donor by the exact draft the donor last
+       * published — unique match only, no guessing. Blocks come from memory
+       * first (same tab), then this session's mirror, then the donor's memory
+       * or mirror. The stray markers are always stripped so a later send
+       * cannot carry invisible residue.
+       *
+       * @param sessionId - session whose composer just (re)mounted.
+       * @param snapshot - live input state ({draft, occurrences, phase}).
+       * @returns whether the draft was rewritten (restored or cleaned up).
+       */
+      recover(sessionId, snapshot) {
+        const k = String(sessionId)
+        if (!snapshot || typeof snapshot.draft !== 'string') return false
+        this.lastInput.set(k, snapshot.draft)
+        if (this.serializing.has(k)) return false
+        if (snapshot.phase && snapshot.phase !== 'plain') return false
+        if ((snapshot.occurrences || []).some((o) => o.source === SOURCE)) return false
+        const draft = snapshot.draft
+        const strays = (draft.match(/\u200B/g) || []).length
+        if (strays === 0) return false
+        let shell
+        try {
+          shell = this.scope(k).shell
+        } catch (e) { return false } // session not ready yet — a later pass retries
+        const usable = (arr) => Array.isArray(arr)
+          ? arr.filter((b) => b && typeof b.content === 'string' && b.content !== '')
+          : []
+        let sources = usable(this.listFor(k))
+        let origin = sources.length ? 'memory' : null
+        let donor = null
+        if (!sources.length) {
+          const saved = recoveryLoad(k)
+          sources = usable(saved && saved.blocks)
+          if (sources.length) origin = 'mirror'
+        }
+        if (!sources.length) {
+          donor = this.findCarryoverSource(k, draft)
+          if (donor) {
+            sources = usable(this.listFor(donor))
+            origin = 'carry-over (live)'
+          }
+        }
+        if (!sources.length) {
+          const scanned = recoveryScanDonor(k, draft)
+          if (scanned && scanned.blocks.length) {
+            donor = scanned.sid
+            sources = usable(scanned.blocks)
+            origin = 'carry-over (mirror)'
+          }
+        }
+        try {
+          shell.setDraft(draft.replace(/\u200B/g, ''))
+        } catch (e) {
+          console.warn('[dsh-pcb] recovery: draft rewrite failed', e)
+          return false
+        }
+        if (sources.length === 0) {
+          console.log('[dsh-pcb] recovery: stripped stray chip markers, nothing to restore')
+          return true
+        }
+        // The draft — and with it the blocks — now belongs to this session:
+        // forget the (possibly moved) bookkeeping; attach() re-derives ids,
+        // labels and numbers, and re-mirrors under this sid.
+        this.forgetSession(k)
+        if (donor) {
+          this.forgetSession(donor)
+          recoveryClear(donor)
+          this.lastInput.delete(donor)
+        }
+        let restored = 0
+        for (const b of sources) {
+          const block = { lang: b.lang || '', content: b.content, lines: b.content.split(/\r?\n/), isCode: !!b.isCode }
+          if (this.attach(k, block)) restored += 1
+        }
+        console.log('[dsh-pcb] recovery: re-attached', restored, 'of', sources.length, 'block(s) via', origin, donor ? `(donor ${donor})` : '')
+        return restored > 0
+      }
+
+      /** Unmounted session that still lists blocks and last published EXACTLY this draft. */
+      findCarryoverSource(targetSid, draft) {
+        let found = null
+        for (const [x, entries] of this.list) {
+          if (x === targetSid || entries.length === 0) continue
+          if (this.serializing.has(x)) continue
+          const listeners = this.listeners.get(x)
+          if (listeners && listeners.size > 0) continue // still mounted — draft did not move
+          if (this.lastInput.get(x) !== draft) continue
+          if (found) return null // ambiguous
+          found = x
+        }
+        return found
+      }
+
+      /** Drop a session's block bookkeeping (its chips are gone or moving). */
+      forgetSession(sessionId) {
+        const k = String(sessionId)
+        for (const b of this.listFor(k)) {
+          this.freeLabel(k, b.type, b.labelNumber)
+          this.refIndex.delete(b.id)
+          for (const [label, r] of this.labelIndex) if (r === b.id) this.labelIndex.delete(label)
+        }
+        this.list.delete(k)
+        this.selected.delete(k)
       }
 
       dispose() {
         for (const t of this.expiry.values()) clearTimeout(t)
+        for (const t of this.recoverTimer.values()) clearTimeout(t)
+        this.recoverTimer.clear()
         this.expiry.clear(); this.list.clear(); this.selected.clear()
         this.used.clear(); this.refIndex.clear(); this.labelIndex.clear()
         this.inFlight.clear(); this.serializing.clear(); this.listeners.clear()
@@ -786,6 +1017,12 @@ window.__ModuleLoader__.load({
       useComposerMark(railRef, props.sessionId, input.draftRev, blocks.length > 0)
 
       React.useEffect(() => {
+        // Recognize a text-only draft re-seed (workspace switch / reload)
+        // FIRST: re-attach lost chips before reconciliation prunes them. A
+        // successful recovery mutates the draft, so this pass must NOT
+        // reconcile against its now-stale snapshot — the next draftRev pass
+        // does that with fresh occurrences.
+        if (props.controller.recover(props.sessionId, input)) return
         props.controller.reconcile(props.sessionId, input.occurrences || [], input.phase)
       }, [props.controller, props.sessionId, input.draftRev, input.phase])
 
@@ -952,7 +1189,13 @@ window.__ModuleLoader__.load({
 
     function buildFoldCard(seg, openKey, t) {
       const infoLang = (seg.lang || '').toLowerCase()
-      const isText = !infoLang || infoLang === 'text'
+      // Only an EXPLICIT ```text fence is a text block. The composer never
+      // emits a bare fence for prose (plain blocks always serialize as
+      // ```text), so a bare ``` fence is code whose language the composer
+      // could not name — fold it as a code card and re-guess the language
+      // for display. (0.2.0 bug: bare fences folded as 文本块, mismatching
+      // the 代码块 chip the message was drafted from.)
+      const isText = infoLang === 'text'
       const lang = isText ? '' : (infoLang || detectLang(seg.body) || '')
       const type = isText ? 'text' : 'code'
       const lines = seg.body.split('\n').length
@@ -1158,7 +1401,10 @@ window.__ModuleLoader__.load({
         : createT(detectBrowserLocale())
 
       const controller = new BlockController(ctx, t)
+      // Test seam (tests/fold-smoke.test.js drives recover() directly).
+      exports.__controllerForTests = controller
       ctx.effect(() => () => controller.dispose(), 'paste-code-block: state')
+      try { recoveryPruneExpired() } catch (e) { /* private mode: recovery simply off */ }
 
       // ----- chip DOM sync: localized labels + per-chip ✕ delete button -----
       function scanChips() {

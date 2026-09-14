@@ -167,11 +167,58 @@ new Function('window', 'document', 'navigator', 'MutationObserver', 'requestAnim
 assert.ok(globalThis.__pcb && typeof globalThis.__pcb.apply === 'function', 'client.js registered with the module loader')
 
 // ---------------- boot apply() with a fake ctx ----------------
+Object.defineProperty(globalThis, 'localStorage', {
+  configurable: true,
+  value: (() => {
+    const ls = new Map()
+    return {
+      getItem: (k) => (ls.has(k) ? ls.get(k) : null),
+      setItem: (k, v) => { ls.set(k, String(v)) },
+      removeItem: (k) => { ls.delete(k) },
+      key: (i) => [...ls.keys()][i] ?? null,
+      get length() { return ls.size },
+    }
+  })(),
+})
+
 let locale = 'zh'
 const DICT = {
-  zh: { 'fold.code': '代码块', 'fold.text': '文本块', 'fold.aria': '展开或折叠该块', 'lines.one': '{count} 行', 'lines.other': '{count} 行', expand: '展开', collapse: '折叠', copy: '复制' },
-  en: { 'fold.code': 'Code', 'fold.text': 'Text', 'fold.aria': 'Expand or collapse this block', 'lines.one': '{count} line', 'lines.other': '{count} lines', expand: 'Expand', collapse: 'Collapse', copy: 'Copy' },
+  zh: { 'block.code': '代码块 {n}', 'block.text': '文本块 {n}', 'fold.code': '代码块', 'fold.text': '文本块', 'fold.aria': '展开或折叠该块', 'lines.one': '{count} 行', 'lines.other': '{count} 行', expand: '展开', collapse: '折叠', copy: '复制' },
+  en: { 'block.code': 'Code #{n}', 'block.text': 'Text #{n}', 'fold.code': 'Code', 'fold.text': 'Text', 'fold.aria': 'Expand or collapse this block', 'lines.one': '{count} line', 'lines.other': '{count} lines', expand: 'Expand', collapse: 'Collapse', copy: 'Copy' },
 }
+
+// Fake DSH session/input services so the controller can attach chips for real:
+// scope(sid) resolves a shell snapshot that behaves like the published input
+// state, and bail() runs the reference-insertion verb against it.
+const shells = new Map()
+function makeShell(sid) {
+  const snapshot = { draft: '', phase: 'plain', draftRev: 0, occurrences: [] }
+  const shell = {
+    sessionId: String(sid), snapshot, editor: {},
+    notify() {},
+    setDraft(text) { snapshot.draft = String(text); snapshot.occurrences = []; snapshot.draftRev += 1 },
+  }
+  shells.set(String(sid), shell)
+  return shell
+}
+function bail(actx, name, detail) {
+  const snap = actx.shell.snapshot
+  if (name === 'slash/input-insert-reference') {
+    const { reference, span } = detail
+    const at = Math.min(span.start, snap.draft.length)
+    snap.draft = snap.draft.slice(0, at) + reference.clipboardText + snap.draft.slice(at)
+    snap.occurrences.push({ source: reference.source, ref: reference.ref, offset: at, length: reference.clipboardText.length })
+    snap.draftRev += 1
+    return true
+  }
+  if (name === 'slash/input-insert-text' && detail.text === '') {
+    snap.draft = snap.draft.slice(0, detail.span.start) + snap.draft.slice(detail.span.end)
+    snap.draftRev += 1
+    return true
+  }
+  return false
+}
+
 const subs = []
 const cleanups = []
 const ctx = {
@@ -188,10 +235,18 @@ const ctx = {
   effect: (fn) => { const c = fn(); if (typeof c === 'function') cleanups.push(c) },
   slots: { inject() {}, register() {} },
   inputTriggers: { registerSource() {} },
-  sessions: {},
-  conversation: {},
+  sessions: {
+    scope: (sid) => {
+      const shell = shells.get(String(sid))
+      if (!shell) return null
+      return { shell, bail: (actx, name, detail) => bail(actx, name, detail) }
+    },
+  },
+  conversation: { input: { for: (actx) => actx.shell } },
 }
 globalThis.__pcb.apply(ctx)
+const controller = globalThis.__pcb.__controllerForTests
+assert.ok(controller, 'apply() exposed the controller test seam')
 
 // ---------------- fixture ----------------
 function flowRow(kind, key, runs) {
@@ -217,6 +272,13 @@ const fenced = '帮我看看这段代码\n```python\na = 1\nprint(a)\n```\n然�
 const b1 = flowRow('user', 'node-1', [fenced])
 const b2 = flowRow('user', 'node-2', ['short note, no fences here'])
 const b3 = flowRow('steering', 'node-3', ['```json\n{"x": 1}\n```'])
+// The composer serializes a language-less CODE block as a BARE fence (prose
+// always gets an explicit ```text) — so bare fences must fold as 代码块,
+// with a guessed language when possible (0.2.1 regression).
+const b4 = flowRow('user', 'node-4', [
+  '```\ndef greet():\n    print("hi")\n```',
+  '```\njust some words\nplain text-ish body\n```',
+])
 
 // apply()'s late-mount scan ran against an empty body; kick one now that the
 // fixtures exist (the shim's MutationObserver is inert, so drive it directly).
@@ -258,6 +320,15 @@ test('steering bubbles fold too', () => {
   const host = b3.children[1]
   assert.ok(host && host.classList.contains('dsh-pcb-fold-host'))
   assert.equal(host.querySelector('.dsh-pcb-fold-title').textContent, 'json · 1 行')
+})
+
+test('bare fences fold as CODE (guessed language when possible), never as 文本块', () => {
+  const cardA = b4.children[1].children.filter((c) => c.classList.contains('dsh-pcb-fold'))[0]
+  assert.equal(cardA.getAttribute('data-pcb-type'), 'code')
+  assert.equal(cardA.children[0].querySelector('.dsh-pcb-fold-title').textContent, 'python · 2 行')
+  const cardB = b4.children[3].children.filter((c) => c.classList.contains('dsh-pcb-fold'))[0]
+  assert.equal(cardB.getAttribute('data-pcb-type'), 'code')
+  assert.equal(cardB.children[0].querySelector('.dsh-pcb-fold-title').textContent, '代码块 · 2 行')
 })
 
 // 2. idempotence + open-state persistence + locale retitle
@@ -311,7 +382,104 @@ test('stale hosts are swept when React replaces the run underneath them', () => 
   assert.equal(fresh.style.display, 'none')
 })
 
-// 5. dispose hands the transcript back
+// 5. draft re-seed recovery (workspace switch / page reload)
+test('recovery re-attaches chips lost to a text-only draft re-seed (memory path)', () => {
+  makeShell('rs-mem')
+  assert.ok(controller.attach('rs-mem', { lang: 'python', content: 'a = 1\nprint(a)', lines: ['a = 1', 'print(a)'], isCode: true }))
+  assert.ok(controller.attach('rs-mem', { lang: 'text', content: 'hello\nworld', lines: ['hello', 'world'], isCode: false }))
+  controller.mirrorNow('rs-mem')
+  assert.ok(localStorage.getItem('dsh-pcb-recovery.rs-mem'), 'mirror written')
+  // Switch away and back: the editor comes up seeded from plain text — one
+  // stray U+200B per lost chip, no occurrences.
+  const seeded = makeShell('rs-mem')
+  seeded.snapshot.draft = '帮我看看\u200B\u200B'
+  assert.equal(controller.recover('rs-mem', seeded.snapshot), true)
+  assert.equal(seeded.snapshot.draft, '帮我看看\u200B\u200B', 'prose + re-attached chips')
+  assert.equal(seeded.snapshot.occurrences.filter((o) => o.source === 'paste-code-block').length, 2)
+  assert.deepEqual(controller.listFor('rs-mem').map((b) => [b.label, b.content]), [
+    ['代码块 1', 'a = 1\nprint(a)'],
+    ['文本块 1', 'hello\nworld'],
+  ])
+  assert.equal(controller.recover('rs-mem', seeded.snapshot), false, 'idempotent: chips are alive now')
+})
+
+test('recovery restores from the localStorage mirror when memory is gone (reload)', () => {
+  makeShell('rs-mir')
+  controller.attach('rs-mir', { lang: '', content: 'plain pasted content\nsecond line', lines: ['plain pasted content', 'second line'], isCode: true })
+  controller.mirrorNow('rs-mir')
+  // Page reload: the controller's maps start empty for this session.
+  controller.list.delete('rs-mir')
+  controller.used.delete('rs-mir')
+  const seeded = makeShell('rs-mir')
+  seeded.snapshot.draft = 'abc\u200B'
+  assert.equal(controller.recover('rs-mir', seeded.snapshot), true)
+  assert.equal(controller.listFor('rs-mir').length, 1)
+  assert.equal(controller.listFor('rs-mir')[0].content, 'plain pasted content\nsecond line')
+})
+
+test('a deleted chip never resurrects: no stray markers means nothing to restore', () => {
+  makeShell('rs-del')
+  controller.attach('rs-del', { lang: 'text', content: 'only block', lines: ['only block'], isCode: false })
+  controller.mirrorNow('rs-del')
+  // User Backspaces the chip: occurrences empty while the block is listed → prune.
+  controller.reconcile('rs-del', [], 'plain')
+  assert.equal(controller.listFor('rs-del').length, 0)
+  const seeded = makeShell('rs-del')
+  seeded.snapshot.draft = 'abc' // chip deletion removed its ZWSP along with the node
+  assert.equal(controller.recover('rs-del', seeded.snapshot), false)
+  assert.equal(controller.listFor('rs-del').length, 0)
+})
+
+test('a send attempt drops the mirror', async () => {
+  makeShell('rs-send')
+  controller.attach('rs-send', { lang: 'text', content: 'goes out', lines: ['goes out'], isCode: false })
+  controller.mirrorNow('rs-send')
+  const id = controller.listFor('rs-send')[0].id
+  assert.ok((await controller.serialize(id)).trimStart().startsWith('```text'), 'round-trip fence')
+  assert.equal(localStorage.getItem('dsh-pcb-recovery.rs-send'), null)
+})
+
+test('stray markers alone are stripped even when nothing is restorable', () => {
+  const seeded = makeShell('rs-orphan')
+  seeded.snapshot.draft = 'lonely-zwsp\u200B'
+  assert.equal(controller.recover('rs-orphan', seeded.snapshot), true)
+  assert.equal(seeded.snapshot.draft, 'lonely-zwsp')
+  assert.equal(controller.listFor('rs-orphan').length, 0)
+})
+
+test('workspace carry-over: a moved draft pulls its blocks from the donor session', () => {
+  makeShell('rs-a')
+  controller.attach('rs-a', { lang: 'text', content: 'moved block', lines: ['moved block'], isCode: false })
+  // A publishes its final draft (with the live chip) before the switch.
+  assert.equal(controller.recover('rs-a', { draft: 'note\u200B', occurrences: [{ source: 'paste-code-block', ref: 'rs-a-1', length: 1 }], phase: 'plain' }), false)
+  // DSH carries the plain draft to B's blank session; the chip does not move.
+  const b = makeShell('rs-b')
+  b.snapshot.draft = 'note\u200B'
+  assert.equal(controller.recover('rs-b', b.snapshot), true)
+  assert.equal(controller.listFor('rs-a').length, 0, 'donor state moved out')
+  assert.equal(localStorage.getItem('dsh-pcb-recovery.rs-a'), null, 'donor mirror moved out')
+  assert.equal(controller.listFor('rs-b').length, 1)
+  assert.equal(controller.listFor('rs-b')[0].content, 'moved block')
+  assert.equal(b.snapshot.occurrences.filter((o) => o.source === 'paste-code-block').length, 1)
+  assert.ok(localStorage.getItem('dsh-pcb-recovery.rs-b'), 'mirrored under the new session now')
+})
+
+test('carry-over survives a page reload via the mirrored donor draft', () => {
+  makeShell('rs-c')
+  controller.attach('rs-c', { lang: 'text', content: 'reloaded block', lines: ['reloaded block'], isCode: false })
+  controller.recover('rs-c', { draft: 'hi\u200B', occurrences: [{ source: 'paste-code-block', ref: 'rs-c-1', length: 1 }], phase: 'plain' })
+  controller.mirrorNow('rs-c')
+  // Reload: all controller memory is gone.
+  controller.list.delete('rs-c'); controller.used.delete('rs-c'); controller.lastInput.delete('rs-c')
+  const d = makeShell('rs-d')
+  d.snapshot.draft = 'hi\u200B'
+  assert.equal(controller.recover('rs-d', d.snapshot), true)
+  assert.equal(controller.listFor('rs-d').length, 1)
+  assert.equal(controller.listFor('rs-d')[0].content, 'reloaded block')
+  assert.equal(localStorage.getItem('dsh-pcb-recovery.rs-c'), null)
+})
+
+// 6. dispose hands the transcript back
 test('dispose removes every fold host and unhides every run', () => {
   for (const c of cleanups) c()
   assert.equal(document.querySelectorAll('.dsh-pcb-fold-host').length, 0)
