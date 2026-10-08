@@ -220,9 +220,10 @@ collapsed view from the moment of send. Assistant output is deliberately not tou
 markdown renderer already styles code blocks its own way.
 
 **Never fight React.** The bubble's children belong to React; removing them would make the
-next reconciliation throw. So the fold *hides* a qualifying `plainRun` span (`display:none` —
+next reconciliation throw. So the fold only ever *hides* the runs it consumes (`display:none` —
 the node stays a child, React keeps patching it harmlessly) and inserts a
-`div.dsh-pcb-fold-host` **after** it. The host is ours: prose segments re-render as
+`div.dsh-pcb-fold-host` **after** them: after the folded run on the per-run path, appended at
+the end of the bubble on the bubble-wide path. The host is ours: prose segments re-render as
 `span.dsh-pcb-fold-prose`, each fence as a collapsed card (glyph `</>`/`Aa` + localized title
 `python · 128 行` / `Text · 128 lines`, copy button copying the **raw fenced text** exactly as
 sent, click-to-expand `<pre>`). Since hiding a child does not affect `textContent`, the
@@ -237,19 +238,22 @@ the cards. Fence-only (not "any long text") is deliberate: composer-created bloc
 travel as fences, while unfenced long messages may have been *typed*, and silently folding
 typed prose would be a nasty surprise.
 
-**Idempotence and refresh.** Each scanned run gets
-`data-dsh-pcb-run = "1|<stamp>"` (folded) or `"0|<stamp>"` (checked, nothing to fold), where
-the stamp folds `foldRev`, text length, and an FNV-1a hash. The shared chip-sync
-MutationObserver coalesces to one rAF scan; a run whose stamp matches is skipped, so steady
-state costs attribute reads. A locale switch bumps `foldRev`, which invalidates every stamp —
-the next scan rebuilds each host and re-titles cards from the live translator. Rebuilds
-preserve who was expanded via a stable `flowKey#runIndex:segIndex` open set, and an orphan
-sweep drops any host whose predecessor is no longer its hidden, stamp-matching run (React can
-remount the run underneath us). Disposal (HMR / plugin removal) removes all hosts and unhides
-every run — the transcript hands back clean.
+**Idempotence and refresh.** The bubble carries
+`data-dsh-pcb-sig = "<mode>|<stamp>"` (`single` = per-run fold, `bubble` = whole-message fold),
+each hidden run carries `data-dsh-pcb-hide = "<stamp>"`, and each host carries
+`data-dsh-pcb-stamp = "<stamp>"`, where the stamp folds `foldRev`, text length, and an FNV-1a
+hash. A bubble whose signature matches and whose DOM still shows that many hidden runs and
+hosts is skipped, so steady state costs attribute reads. A locale switch bumps `foldRev`, which
+invalidates every stamp — the next scan rebuilds each host and re-titles cards from the live
+translator. Rebuilds preserve who was expanded via a stable `flowKey#scope:segIndex` open set,
+and a payload change (or a React remount of a run underneath us) clears the stale fold first —
+hosts are removed and every stamped run unhidden — before the new plan is built. Disposal
+(HMR / plugin removal) removes all hosts and unhides every run — the transcript hands back
+clean. A bubble with no plan and no fold is never touched at all (no marker, no attribute).
 
 `tests/fold-smoke.test.js` exercises the real bundle against a dependency-free DOM shim:
-fold → marker/card/prose structure, steering rows, non-fenced messages untouched, retitle
+fold → marker/card/prose structure, steering rows, non-fenced messages untouched, a fence that
+straddles the runs DSH split at its @mention chips folding at bubble scope (0.2.6), retitle
 across locale switches with open-state kept, text edits re-fold and unfold, orphan sweep,
 and dispose restoration.
 
@@ -335,3 +339,35 @@ would reconcile against is stale; the draft mutation bumps `draftRev` and the ne
 reconciles real occurrences. Restored chips get re-derived labels and numbers, so a
 restored draft is indistinguishable from one that never left. Mirror writes are best
 effort: private mode / quota only lose reload durability, never the feature itself.
+
+## 14. Re-pasting your own message (0.2.6)
+
+The 0.2.5 report: the user copied their *previous* message out of the transcript and pasted it
+back to continue the conversation. The plugin got the round trip wrong twice over, and the
+captured payload is kept as `tests/fixtures.js#B2` / `W` / `B` so the shapes cannot drift.
+
+**A fence plus a tail is not one code block.** `parseBlock()` used to call anything that
+*starts* with a fence a code block, so a message that was one ` ```text ` fence **plus** words
+after it was typed as code; re-pasting then re-serialized the tail *inside* the fence. The fix
+records the whole-fence span during detection (`wholeFence()` — the paste is a block only when
+the fence is the entire paste, optionally surrounded by whitespace) and, when a paste starts
+with a fence but carries a tail, takes the block type from the opening fence's own info string:
+` ```text ` is a 文本块, a bare/other fence is 代码块, and the tail stays prose outside it.
+
+**Chosen fence markers must outgrow their body.** A block whose *content* already contains a
+fence (re-pasting folded output does exactly this) was re-serialized inside a bare ` ``` `, so
+the inner fence closed the outer one and the rest of the block spilled out as prose.
+`serializeBlock()` now picks its outer marker with `fenceMarkerFor()`: the longest consecutive
+backtick run in the content plus one (minimum three), so the wrapper always outgrows anything
+inside it. Round-tripping fixed output is therefore stable.
+
+**Fold scope is the bubble, not the run.** DSH splits a sent user message into several
+`plainRun` spans at every `@mention` chip, and a fence can begin in one run and end in another.
+Per-run scanning paired such an outer fence with an *inner* opener and folded a bogus one-line
+card while the rest of the message stayed as raw text. `planFoldRuns(text, runTexts)` (embedded
+copy of the same name in `src/parse.js`; `fenceRanges()` is the shared span finder) plans the
+fences over the runs' text joined back together and reports either `single` (every fence sits
+inside one run — keep the per-run path, which leaves mention chips clickable) or `bubble` (a
+fence straddles runs — hide every run and render the whole message from the bubble-wide plan).
+An isolated/debug black corner badge printed on every scan is gone unless
+`window.__PCB_DEBUG__ === true`.

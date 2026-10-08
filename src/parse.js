@@ -38,6 +38,26 @@ export function detectLang(text) {
 }
 
 /**
+ * The single complete fence of `text`, or null when the text is not exactly one
+ * fenced block (blank lines around it are tolerated; any real prose is not).
+ * Shares splitFencedSegments' pairing rules, so a 4-backtick wrapper around
+ * content that itself contains ``` is recognised as one fence, not two.
+ */
+export function wholeFence(text) {
+  const segs = splitFencedSegments(text)
+  let fence = null
+  for (const seg of segs) {
+    if (seg.kind === 'fence') {
+      if (fence) return null
+      fence = seg
+    } else if (seg.text.trim() !== '') {
+      return null
+    }
+  }
+  return fence
+}
+
+/**
  * Parse pasted text into a block, or null when it is ordinary short prose
  * that should paste plainly. `isCode` drives both the chip label (registered
  * per locale via i18n key `block.code` / `block.text` — see `src/i18n.js`)
@@ -47,12 +67,46 @@ export function parseBlock(raw) {
   const text = String(raw || '').replace(/^\uFEFF/, '')
   if (!text) return null
 
-  const fm = /^\s*```([\w+-]*)[^\n]*\n([\s\S]*?)\n?\s*```\s*$/.exec(text)
-  if (fm) {
-    const lang = (fm[1] || '').trim()
-    const content = fm[2].replace(/\n+$/, '')
+  // (1) A paste that is exactly ONE complete fence — this plugin's own output
+  // shape, and what "copy the block back out" produces. The type comes from the
+  // fence's info string, so an explicit ```text paste is a TEXT block and
+  // round-trips, instead of degrading into a bare code fence on the next send.
+  const whole = wholeFence(text)
+  if (whole) {
+    const content = whole.body.replace(/\n+$/, '')
     if (!content) return null
-    return { lang, content, lines: content.split(/\r?\n/), isCode: true }
+    const infoLang = (whole.lang || '').toLowerCase()
+    return {
+      lang: infoLang === 'text' ? '' : whole.lang,
+      content,
+      lines: content.split(/\r?\n/),
+      isCode: infoLang !== 'text',
+    }
+  }
+
+  // (2) A paste that OPENS with a fence but carries trailing prose after it —
+  // copying a whole previous message (fenced block + the line typed under it).
+  // Keep the entire paste as ONE block so its fence pairing survives, and take
+  // the type from the leading fence's info string. 0.2.5 fell through to the
+  // heuristic branch here: `fenced` forced isCode = true and serializeBlock
+  // re-wrapped the already-fenced text in a BARE fence, so the bubble received
+  // two nested fences (with the trailing line inside the outer one) even though
+  // the chip had said 文本块.
+  const segs = splitFencedSegments(text)
+  let leadFence = -1
+  for (let i = 0; i < segs.length; i += 1) {
+    if (segs[i].kind === 'fence') { leadFence = i; break }
+    if (segs[i].text.trim() !== '') break
+  }
+  if (leadFence >= 0) {
+    const leadLang = (segs[leadFence].lang || '').toLowerCase()
+    const content = text.replace(/\n+$/, '')
+    return {
+      lang: leadLang === 'text' ? '' : segs[leadFence].lang,
+      content,
+      lines: content.split(/\r?\n/),
+      isCode: leadLang !== 'text',
+    }
   }
 
   const multi = /\r?\n/.test(text)
@@ -96,9 +150,25 @@ export function countMarkdownSignals(text) {
   return n
 }
 
+/**
+ * Backtick marker long enough to wrap `content` unambiguously: one longer than
+ * the longest backtick run inside it (GFM nesting rule). Without this, content
+ * that already contains a fence closes the wrapper early and the sent message
+ * re-parses as several blocks — the bubble then shows the wall of text plus a
+ * card built from whatever fragment happened to look like a fence.
+ */
+export function fenceMarkerFor(content) {
+  const src = String(content == null ? '' : content)
+  let longest = 0
+  const runs = src.match(/`+/g)
+  if (runs) for (const run of runs) if (run.length > longest) longest = run.length
+  return '`'.repeat(Math.max(3, longest + 1))
+}
+
 export function serializeBlock(block) {
   const lang = block.isCode ? (block.lang || '') : 'text'
-  return `\n\`\`\`${lang}\n${block.content}\n\`\`\`\n`
+  const marker = fenceMarkerFor(block.content)
+  return `\n${marker}${lang}\n${block.content}\n${marker}\n`
 }
 
 /**
@@ -163,4 +233,87 @@ export function splitFencedSegments(text) {
   }
   flushProse(lines.length)
   return segments
+}
+
+/**
+ * Character ranges of every complete fence in `text`, in order, as
+ * `{ start, end }` (end exclusive, covering both fence lines). Same pairing
+ * rules as splitFencedSegments — index k here is the fence of the k-th fence
+ * segment it returns. Used by the sent-message fold scan to tell whether a
+ * fence sits inside one rendered run or straddles several.
+ */
+export function fenceRanges(text) {
+  const src = String(text == null ? '' : text)
+  const out = []
+  if (!src) return out
+  const starts = [0]
+  for (let i = 0; i < src.length; i += 1) if (src.charCodeAt(i) === 10) starts.push(i + 1)
+  const lineEnd = (n) => (n + 1 < starts.length ? starts[n + 1] - 1 : src.length)
+  const lineText = (n) => src.slice(starts[n], lineEnd(n)).replace(/\r$/, '')
+  const OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/
+  let i = 0
+  while (i < starts.length) {
+    const m = OPEN.exec(lineText(i))
+    if (!m) { i += 1; continue }
+    const marker = m[1]
+    const ch = marker[0]
+    const info = m[2].trim()
+    if (ch === '`' && info.includes('`')) { i += 1; continue }
+    const closeRe = new RegExp('^ {0,3}' + (ch === '`' ? '`' : '~') + '{' + marker.length + ',}[ \\t]*$')
+    let j = i + 1
+    let closed = false
+    while (j < starts.length) {
+      if (closeRe.test(lineText(j))) { closed = true; break }
+      j += 1
+    }
+    if (!closed) { i += 1; continue }
+    out.push({ start: starts[i], end: starts[j] + lineText(j).length })
+    i = j + 1
+  }
+  return out
+}
+
+/**
+ * How the sent-message fold scan should fold `text`, given the `runTexts` DSH
+ * actually rendered it as. DSH splits a user message into one plain run per
+ * mention chip, so a serialized block whose body mentions someone arrives as
+ * several sibling runs — with the fence opener in one and its closer in
+ * another, which no per-run scan can ever pair up.
+ *
+ * Returns null when nothing is foldable, else:
+ *  - { mode: 'single', segments, runs }   every fence lies inside ONE run;
+ *      `runs` lists the run indices to fold, each on its own.
+ *  - { mode: 'bubble', segments, fences } a fence straddles run boundaries;
+ *      the caller must rebuild the whole bubble from `segments`, because
+ *      per-run folding only ever sees a broken half of the fence.
+ */
+export function planFoldRuns(text, runTexts) {
+  const src = String(text == null ? '' : text)
+  const segments = splitFencedSegments(src)
+  const fenceSegs = segments.filter((seg) => seg.kind === 'fence')
+  const spans = fenceRanges(src)
+  if (fenceSegs.length !== spans.length) return null // defensive: keep the two walks in step
+  const fences = []
+  fenceSegs.forEach((seg, k) => { if (seg.body.trim() !== '') fences.push(spans[k]) })
+  if (!fences.length) return null
+
+  const bounds = []
+  let at = 0
+  for (const rt of (runTexts || [])) {
+    const len = String(rt == null ? '' : rt).length
+    bounds.push([at, at + len])
+    at += len
+  }
+  const runOf = (off) => {
+    for (let k = 0; k < bounds.length; k += 1) if (off >= bounds[k][0] && off < bounds[k][1]) return k
+    return -1
+  }
+  const runs = []
+  for (const f of fences) {
+    const a = runOf(f.start)
+    const b = runOf(Math.max(f.start, f.end - 1))
+    if (a < 0 || a !== b) return { mode: 'bubble', segments, fences }
+    if (!runs.includes(a)) runs.push(a)
+  }
+  return { mode: 'single', segments, runs }
 }

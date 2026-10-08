@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { B2 } from './fixtures.js'
 
 // ---------------- mini DOM ----------------
 class TextNode {
@@ -267,8 +268,16 @@ function flowRow(kind, key, runs) {
   doc.body.appendChild(row)
   for (const text of runs) {
     const span = new El('span', doc)
-    span.className = '_plainRun_z12h9_6'
-    span.textContent = text
+    // DSH renders an @mention as its own chip element, not a plainRun — that is
+    // exactly why one sent message can come back as several runs and a fence
+    // can straddle them.
+    if (text && typeof text === 'object') {
+      span.className = '_mentionChip_ab12cd_3'
+      span.textContent = text.mention
+    } else {
+      span.className = '_plainRun_z12h9_6'
+      span.textContent = text
+    }
     bubble.appendChild(span)
   }
   return bubble
@@ -280,11 +289,30 @@ const b2 = flowRow('user', 'node-2', ['short note, no fences here'])
 const b3 = flowRow('steering', 'node-3', ['```json\n{"x": 1}\n```'])
 // The composer serializes a language-less CODE block as a BARE fence (prose
 // always gets an explicit ```text) — so bare fences must fold as 代码块,
-// with a guessed language when possible (0.2.1 regression).
+// with a guessed language when possible (0.2.1 regression). Adjacent blocks in
+// one message live in ONE run (DSH only splits runs at @mention chips).
 const b4 = flowRow('user', 'node-4', [
-  '```\ndef greet():\n    print("hi")\n```',
-  '```\njust some words\nplain text-ish body\n```',
+  '```\ndef greet():\n    print("hi")\n```\n```\njust some words\nplain text-ish body\n```',
 ])
+
+// The 0.2.6 user bug, as captured (tests/fixtures.js#B2): the message DSH sent
+// back holds a bare fence that only closes at the very end, wrapped around an
+// inner ```text block, with @mention chips splitting the bubble into 5 runs.
+// Per-run scanning paired the outer fence with the inner one and folded a bogus
+// one-line card; the plan must be made over the whole bubble instead.
+const MENTION = '@smalltailqwq/dsh-client-ui-skin-deep-whale-manager'
+function mentionRuns(text, mention) {
+  const out = []
+  let rest = text
+  for (;;) {
+    const i = rest.indexOf(mention)
+    if (i < 0) { out.push(rest); return out }
+    out.push(rest.slice(0, i), { mention })
+    rest = rest.slice(i + mention.length)
+  }
+}
+const b5runs = mentionRuns(B2, MENTION)
+const b5 = flowRow('user', 'node-5', b5runs)
 
 // apply()'s late-mount scan ran against an empty body; kick one now that the
 // fixtures exist (the shim's MutationObserver is inert, so drive it directly).
@@ -295,7 +323,8 @@ scanAgain()
 test('sent fences fold into cards; prose run is hidden not removed', () => {
   const run = b1.children[0]
   assert.equal(run.style.display, 'none')
-  assert.ok((run.getAttribute('data-dsh-pcb-run') || '').startsWith('1|'))
+  assert.ok(run.getAttribute('data-dsh-pcb-hide'), 'hidden run carries the fold stamp')
+  assert.ok((b1.getAttribute('data-dsh-pcb-sig') || '').startsWith('single|'), 'one run holds both fences: per-run path')
   const host = b1.children[1]
   assert.ok(host.classList.contains('dsh-pcb-fold-host'))
   const cards = host.children.filter((c) => c.classList.contains('dsh-pcb-fold'))
@@ -315,10 +344,11 @@ test('sent fences fold into cards; prose run is hidden not removed', () => {
   assert.equal(prose[1].textContent, '然后是文本')
 })
 
-test('non-fenced messages are left alone (checked marker, still visible)', () => {
+test('non-fenced messages are left alone (nothing hidden, nothing marked)', () => {
   const run = b2.children[0]
   assert.equal(run.style.display, '')
-  assert.ok((run.getAttribute('data-dsh-pcb-run') || '').startsWith('0|'))
+  assert.equal(run.getAttribute('data-dsh-pcb-hide'), null, 'nothing was hidden')
+  assert.equal(b2.getAttribute('data-dsh-pcb-sig'), null, 'bubble left unfingered')
   assert.equal(b2.children.filter((c) => c.classList.contains('dsh-pcb-fold-host')).length, 0)
 })
 
@@ -329,12 +359,38 @@ test('steering bubbles fold too', () => {
 })
 
 test('bare fences fold as CODE (guessed language when possible), never as 文本块', () => {
-  const cardA = b4.children[1].children.filter((c) => c.classList.contains('dsh-pcb-fold'))[0]
-  assert.equal(cardA.getAttribute('data-pcb-type'), 'code')
-  assert.equal(cardA.children[0].querySelector('.dsh-pcb-fold-title').textContent, 'python · 2 行')
-  const cardB = b4.children[3].children.filter((c) => c.classList.contains('dsh-pcb-fold'))[0]
-  assert.equal(cardB.getAttribute('data-pcb-type'), 'code')
-  assert.equal(cardB.children[0].querySelector('.dsh-pcb-fold-title').textContent, '代码块 · 2 行')
+  const host = b4.children[1]
+  assert.ok(host.classList.contains('dsh-pcb-fold-host'))
+  const cards = host.children.filter((c) => c.classList.contains('dsh-pcb-fold'))
+  assert.equal(cards.length, 2, 'both bare fences fold')
+  assert.equal(cards[0].getAttribute('data-pcb-type'), 'code')
+  assert.equal(cards[0].children[0].querySelector('.dsh-pcb-fold-title').textContent, 'python · 2 行')
+  assert.equal(cards[1].getAttribute('data-pcb-type'), 'code')
+  assert.equal(cards[1].children[0].querySelector('.dsh-pcb-fold-title').textContent, '代码块 · 2 行')
+  assert.equal(b4.getAttribute('data-dsh-pcb-sig').startsWith('single|'), true)
+})
+
+// 1b. the 0.2.6 regression, at the DOM level: a fence that straddles the runs
+// DSH split at its @mention chips is planned over the whole bubble.
+test('a fence straddling mention-chip runs folds at bubble scope (0.2.6)', () => {
+  scanAgain()
+  const host = b5.children[b5.children.length - 1]
+  assert.ok(host.classList.contains('dsh-pcb-fold-host'), 'one host, appended after the runs')
+  assert.equal(b5.children.filter((c) => c.classList.contains('dsh-pcb-fold-host')).length, 1)
+  assert.ok((b5.getAttribute('data-dsh-pcb-sig') || '').startsWith('bubble|'), 'bubble-scope signature')
+  assert.equal(b5.children.length, b5runs.length + 1, 'runs are hidden, never removed')
+  for (const run of b5.children.slice(0, b5runs.length)) {
+    assert.equal(run.style.display, 'none', 'the plan owns the whole bubble')
+    assert.ok(run.getAttribute('data-dsh-pcb-hide'), 'hidden run carries the fold stamp')
+  }
+  const cards = host.children.filter((c) => c.classList.contains('dsh-pcb-fold'))
+  assert.equal(cards.length, 1, 'the outer fence pairs with its own closing fence')
+  assert.equal(cards[0].getAttribute('data-pcb-type'), 'code')
+  const body = cards[0].children[1].textContent
+  assert.ok(body.includes('aegis') && body.includes('```text'), 'the inner block stays inside the folded card')
+  assert.ok(body.split('\n').length > 5, 'not the bogus one-line card per-run scanning produced')
+  const prose = host.children.filter((c) => c.classList.contains('dsh-pcb-fold-prose'))
+  assert.equal(prose.length, 1, 'the trailing line stays visible as prose')
 })
 
 // 2. idempotence + open-state persistence + locale retitle
@@ -578,9 +634,9 @@ test('a paste-storm of identical clipboard text collapses in-burst but honors de
 test('dispose removes every fold host and unhides every run', () => {
   for (const c of cleanups) c()
   assert.equal(document.querySelectorAll('.dsh-pcb-fold-host').length, 0)
-  const runs = document.querySelectorAll('[data-dsh-pcb-run]')
-  assert.equal(runs.length, 0)
-  for (const b of [b1, b3]) {
+  assert.equal(document.querySelectorAll('[data-dsh-pcb-hide]').length, 0)
+  assert.equal(document.querySelectorAll('[data-dsh-pcb-sig]').length, 0)
+  for (const b of [b1, b3, b4, b5]) {
     assert.equal(b.children.filter((c) => c.classList.contains('dsh-pcb-fold-host')).length, 0)
   }
 })

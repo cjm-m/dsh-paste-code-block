@@ -17,6 +17,20 @@ window.__ModuleLoader__.load({
     const DETAIL_NS = 'dsh-pcb-detail'
     const CHIP_X_CLASS = 'dsh-pcb-chip-x'
 
+    // ===== diagnostics =======================================================
+    // Off by default. Set `window.__PCB_DEBUG__ = true` in the console (then
+    // paste / send) to trace paste parsing and fold decisions. The on-screen
+    // badge that used to sit above the composer was scaffolding for one
+    // debugging session and is gone.
+    const PCB_DEBUG = (() => {
+      try { return typeof window !== 'undefined' && window.__PCB_DEBUG__ === true } catch (e) { return false }
+    })()
+    function pcbDiag(kind, info) {
+      if (!PCB_DEBUG) return
+      try { console.log('[pcb-diag]', kind + (info ? ': ' + info : '')) } catch (e) {}
+    }
+    // =========================================================================
+
     // ----- shared chip-DOM helpers ------------------------------------------
     // Module level on purpose: the chip sync scan and the controller's removal
     // path both need to map a chip host element back to its label (and its
@@ -219,6 +233,25 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The single complete fence of `text`, or null when the text is not exactly
+     * one fenced block (blank lines around it tolerated, real prose not).
+     * Keep in sync with src/parse.js#wholeFence.
+     */
+    function wholeFence(text) {
+      const segs = splitFencedSegments(text)
+      let fence = null
+      for (const seg of segs) {
+        if (seg.kind === 'fence') {
+          if (fence) return null
+          fence = seg
+        } else if (seg.text.trim() !== '') {
+          return null
+        }
+      }
+      return fence
+    }
+
+    /**
      * Parse pasted text into a block, or null when it is ordinary short prose
      * that should paste plainly. `isCode` drives both the chip label
      * (i18n key `block.code` vs `block.text`, e.g. "代码块 N" / "Code #N")
@@ -228,12 +261,42 @@ window.__ModuleLoader__.load({
       const text = String(raw || '').replace(/^\uFEFF/, '')
       if (!text) return null
 
-      const fm = /^\s*```([\w+-]*)[^\n]*\n([\s\S]*?)\n?\s*```\s*$/.exec(text)
-      if (fm) {
-        const lang = (fm[1] || '').trim()
-        const content = fm[2].replace(/\n+$/, '')
+      // (1) exactly one complete fence: this plugin's own output shape. The
+      // fence's info string decides the type, so an explicit ```text paste is
+      // a TEXT block and round-trips instead of degrading into bare code.
+      const whole = wholeFence(text)
+      if (whole) {
+        const content = whole.body.replace(/\n+$/, '')
         if (!content) return null
-        return { lang, content, lines: content.split(/\r?\n/), isCode: true }
+        const infoLang = (whole.lang || '').toLowerCase()
+        return {
+          lang: infoLang === 'text' ? '' : whole.lang,
+          content,
+          lines: content.split(/\r?\n/),
+          isCode: infoLang !== 'text',
+        }
+      }
+
+      // (2) a paste that OPENS with a fence but carries trailing prose — the
+      // copy-a-whole-previous-message case. Keep it as ONE block and take the
+      // type from the leading fence's info string, so the chip and the
+      // transcript agree. (0.2.5 treated it as code and re-wrapped the
+      // already-fenced text in a bare fence: two nested fences in the bubble.)
+      const segs = splitFencedSegments(text)
+      let leadFence = -1
+      for (let i = 0; i < segs.length; i += 1) {
+        if (segs[i].kind === 'fence') { leadFence = i; break }
+        if (segs[i].text.trim() !== '') break
+      }
+      if (leadFence >= 0) {
+        const leadLang = (segs[leadFence].lang || '').toLowerCase()
+        const content = text.replace(/\n+$/, '')
+        return {
+          lang: leadLang === 'text' ? '' : segs[leadFence].lang,
+          content,
+          lines: content.split(/\r?\n/),
+          isCode: leadLang !== 'text',
+        }
       }
 
       const multi = /\r?\n/.test(text)
@@ -277,9 +340,23 @@ window.__ModuleLoader__.load({
       return n
     }
 
+    /**
+     * Backtick marker long enough to wrap `content` unambiguously: longer than
+     * the longest backtick run inside it. Keep in sync with
+     * src/parse.js#fenceMarkerFor.
+     */
+    function fenceMarkerFor(content) {
+      const src = String(content == null ? '' : content)
+      let longest = 0
+      const runs = src.match(/`+/g)
+      if (runs) for (const run of runs) if (run.length > longest) longest = run.length
+      return '`'.repeat(Math.max(3, longest + 1))
+    }
+
     function serializeBlock(block) {
       const lang = block.isCode ? (block.lang || '') : 'text'
-      return `\n\`\`\`${lang}\n${block.content}\n\`\`\`\n`
+      const marker = fenceMarkerFor(block.content)
+      return `\n${marker}${lang}\n${block.content}\n${marker}\n`
     }
 
     // ----- fence segmentation (embedded copy of src/parse.js) ----------------
@@ -326,6 +403,80 @@ window.__ModuleLoader__.load({
       }
       flushProse(lines.length)
       return segments
+    }
+
+    /**
+     * Character ranges of every complete fence in `text`, in order, as
+     * { start, end } (end exclusive, both fence lines included). Same pairing
+     * rules as splitFencedSegments. Keep in sync with src/parse.js#fenceRanges.
+     */
+    function fenceRanges(text) {
+      const src = String(text == null ? '' : text)
+      const out = []
+      if (!src) return out
+      const starts = [0]
+      for (let i = 0; i < src.length; i += 1) if (src.charCodeAt(i) === 10) starts.push(i + 1)
+      const lineEnd = (n) => (n + 1 < starts.length ? starts[n + 1] - 1 : src.length)
+      const lineText = (n) => src.slice(starts[n], lineEnd(n)).replace(/\r$/, '')
+      const OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/
+      let i = 0
+      while (i < starts.length) {
+        const m = OPEN.exec(lineText(i))
+        if (!m) { i += 1; continue }
+        const marker = m[1]
+        const ch = marker[0]
+        const info = m[2].trim()
+        if (ch === '`' && info.includes('`')) { i += 1; continue }
+        const closeRe = new RegExp('^ {0,3}' + (ch === '`' ? '`' : '~') + '{' + marker.length + ',}[ \\t]*$')
+        let j = i + 1
+        let closed = false
+        while (j < starts.length) {
+          if (closeRe.test(lineText(j))) { closed = true; break }
+          j += 1
+        }
+        if (!closed) { i += 1; continue }
+        out.push({ start: starts[i], end: starts[j] + lineText(j).length })
+        i = j + 1
+      }
+      return out
+    }
+
+    /**
+     * How the sent-message fold scan should fold `text`, given the run texts
+     * DSH actually rendered it as. Keep in sync with src/parse.js#planFoldRuns.
+     * Returns null when nothing is foldable, else
+     *   { mode:'single', segments, runs }  — every fence lies inside ONE run
+     *   { mode:'bubble', segments, fences } — a fence straddles run boundaries
+     */
+    function planFoldRuns(text, runTexts) {
+      const src = String(text == null ? '' : text)
+      const segments = splitFencedSegments(src)
+      const fenceSegs = segments.filter((seg) => seg.kind === 'fence')
+      const spans = fenceRanges(src)
+      if (fenceSegs.length !== spans.length) return null
+      const fences = []
+      fenceSegs.forEach((seg, k) => { if (seg.body.trim() !== '') fences.push(spans[k]) })
+      if (!fences.length) return null
+
+      const bounds = []
+      let at = 0
+      for (const rt of (runTexts || [])) {
+        const len = String(rt == null ? '' : rt).length
+        bounds.push([at, at + len])
+        at += len
+      }
+      const runOf = (off) => {
+        for (let k = 0; k < bounds.length; k += 1) if (off >= bounds[k][0] && off < bounds[k][1]) return k
+        return -1
+      }
+      const runs = []
+      for (const f of fences) {
+        const a = runOf(f.start)
+        const b = runOf(Math.max(f.start, f.end - 1))
+        if (a < 0 || a !== b) return { mode: 'bubble', segments, fences }
+        if (!runs.includes(a)) runs.push(a)
+      }
+      return { mode: 'single', segments, runs }
     }
 
     // ===== Recovery mirror (draft re-seed after workspace switch / reload) ===
@@ -515,7 +666,11 @@ window.__ModuleLoader__.load({
       insertReference(sessionId, block) {
         const { actx, shell } = this.scope(sessionId)
         const input = shell.snapshot
-        if (!input || input.phase !== 'plain') return false
+        // DSH's SessionInputShell.insertReference accepts both `plain` and
+        // `claimed` phases; mirror that so a paste while a command draft is
+        // still pending (claimed) folds into a chip instead of falling back to
+        // raw text. Submitting/adjudicating (mid-submit) stay rejected.
+        if (!input || (input.phase !== 'plain' && input.phase !== 'claimed')) return false
         // Each chip contributes exactly one char to the editor's detect text
         // (the "￼" placeholder) and one char to the plain `draft` projection
         // (clipboardText = zero-width space, chosen because String#trim() does
@@ -1183,8 +1338,9 @@ window.__ModuleLoader__.load({
     // React-side and never sees this DOM.
     const FOLD_HOST_CLASS = 'dsh-pcb-fold-host'
     const FOLD_CARD_CLASS = 'dsh-pcb-fold'
-    const FOLD_RUN_ATTR = 'data-dsh-pcb-run'      // '1|<stamp>' folded · '0|<stamp>' checked, plain
-    const FOLD_STAMP_ATTR = 'data-dsh-pcb-stamp'  // on the host, matches the run's stamp
+    const FOLD_STAMP_ATTR = 'data-dsh-pcb-stamp'  // on a host: the content stamp it was built from
+    const FOLD_HIDE_ATTR = 'data-dsh-pcb-hide'    // on every run the scan hid: the same stamp
+    const FOLD_SIG_ATTR = 'data-dsh-pcb-sig'      // on the bubble: '<mode>|<stamp>' it was folded for
     const FOLD_BUBBLE_SEL = [
       '[data-chat-flow-kind="user"]',
       '[data-chat-flow-kind="steering"]',
@@ -1423,6 +1579,7 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'sessions', 'conversation', 'inputTriggers', 'locale']
 
     function apply(ctx) {
+      try { pcbDiag('LOADED', 'v0.2.5-diag') } catch (e) {}
       // Bump alongside package.json on every release — the load log is the
       // only proof of WHICH bundle generation the browser actually loaded.
       try { console.log('[dsh-paste-code-block] client loaded v0.2.5') } catch (e) { /* noop */ }
@@ -1494,25 +1651,95 @@ window.__ModuleLoader__.load({
       }
 
       // ----- sent-message fold: the scan ------------------------------------
-      function foldRun(run, plan, keyBase, stamp) {
-        run.setAttribute(FOLD_RUN_ATTR, `1|${stamp}`)
-        run.style.display = 'none'
-        const next = run.nextElementSibling
-        if (next && next.classList.contains(FOLD_HOST_CLASS)) {
-          if (next.getAttribute(FOLD_STAMP_ATTR) === stamp) return // already current
-          next.remove()
+      // DSH renders a sent message as plain pre-wrap runs and SPLITS those runs
+      // at every @mention chip, so one serialized block can arrive as several
+      // sibling runs with the fence opener in one and its closer in another.
+      // A per-run scan then sees only an unterminated half (nothing to fold) —
+      // or, worse, a fragment that happens to look like a complete fence, which
+      // is how a bogus card built from the tail of the message used to appear.
+      // So fold at BUBBLE scope: rebuild the text from the runs, plan the
+      // fences over that, and keep the per-run path only when every fence sits
+      // inside a single run (which leaves DSH's mention chips clickable).
+      const foldedBubbles = new WeakSet()
+
+      /** Hand a bubble back to DSH's own rendering. */
+      function clearFolds(bubble) {
+        for (const el of [...bubble.children]) {
+          if (el.classList.contains(FOLD_HOST_CLASS)) { el.remove(); continue }
+          if (el.getAttribute(FOLD_HIDE_ATTR) !== null) {
+            el.style.display = ''
+            el.removeAttribute(FOLD_HIDE_ATTR)
+          }
         }
-        const host = buildFoldHost(plan, keyBase, t)
-        host.setAttribute(FOLD_STAMP_ATTR, stamp)
-        run.insertAdjacentElement('afterend', host)
+        bubble.removeAttribute(FOLD_SIG_ATTR)
+        foldedBubbles.delete(bubble)
       }
 
-      /** Restore a previously folded run to DSH's own rendering. */
-      function unfoldRun(run, stamp) {
-        const next = run.nextElementSibling
-        if (next && next.classList.contains(FOLD_HOST_CLASS)) next.remove()
-        run.style.display = ''
-        run.setAttribute(FOLD_RUN_ATTR, `0|${stamp}`)
+      /** True when the DOM still matches what `sig` claims (React remounts runs). */
+      function foldsIntact(bubble, mode, stamp, wanted) {
+        const kids = [...bubble.children]
+        const hosts = kids.filter((el) => el.classList.contains(FOLD_HOST_CLASS))
+        if (hosts.length !== (mode === 'bubble' ? 1 : wanted)) return false
+        for (const host of hosts) if (host.getAttribute(FOLD_STAMP_ATTR) !== stamp) return false
+        const hidden = kids.filter((el) => el.getAttribute(FOLD_HIDE_ATTR) === stamp)
+        if (hidden.length !== wanted) return false
+        for (const el of hidden) if (el.style.display !== 'none') return false
+        return true
+      }
+
+      function foldBubble(bubble) {
+        const holder = bubble.closest('[data-chat-flow-key]')
+        const flowKey = holder ? holder.getAttribute('data-chat-flow-key') || '' : ''
+        const runs = [...bubble.children].filter((el) => !el.classList.contains(FOLD_HOST_CLASS))
+        const texts = runs.map((el) => el.textContent || '')
+        const full = texts.join('')
+        const stamp = foldStamp(full)
+        // Cheap guard first: most messages carry no fence at all.
+        const plan = runs.length && FENCE_HINT.test(full) ? planFoldRuns(full, texts) : null
+        let mode = plan ? plan.mode : ''
+        let subs = []
+        if (plan && mode === 'single') {
+          for (const k of plan.runs) {
+            const sub = foldPlanFor(texts[k])
+            if (sub) subs.push([k, sub])
+          }
+          // A run we cannot plan for (a mention chip, a wrapper element) is not
+          // ours to hide — rebuild the bubble instead.
+          if (!subs.length || plan.runs.some((k) => !isFoldRun(runs[k]))) mode = 'bubble'
+        }
+        const sig = plan ? `${mode}|${stamp}` : ''
+        const wanted = plan ? (mode === 'bubble' ? runs.length : subs.length) : 0
+        if (plan && bubble.getAttribute(FOLD_SIG_ATTR) === sig && foldsIntact(bubble, mode, stamp, wanted)) return
+        if (!plan && !foldedBubbles.has(bubble)) return
+        clearFolds(bubble)
+        if (!plan) return
+        const keyBase = flowKey || 'h' + hash32(full)
+        const fenceCount = plan.fences ? plan.fences.length : (plan.runs || []).length
+        pcbDiag('FOLD', 'mode=' + mode + ' runs=' + runs.length + ' fences=' + fenceCount +
+          ' hide=' + (mode === 'bubble' ? 'all' : subs.map((s) => s[0]).join(',')) + ' len=' + full.length)
+        if (mode === 'bubble') {
+          // Hide every run and render the whole message from the plan, so the
+          // fence that straddled them is paired again. Mention chips inside the
+          // folded text lose their click target — they are collapsed content.
+          const host = buildFoldHost(plan.segments, `${keyBase}#b`, t)
+          host.setAttribute(FOLD_STAMP_ATTR, stamp)
+          for (const el of runs) {
+            el.style.display = 'none'
+            el.setAttribute(FOLD_HIDE_ATTR, stamp)
+          }
+          bubble.appendChild(host)
+        } else {
+          for (const [k, sub] of subs.slice().sort((a, b) => a[0] - b[0])) {
+            const el = runs[k]
+            el.style.display = 'none'
+            el.setAttribute(FOLD_HIDE_ATTR, stamp)
+            const host = buildFoldHost(sub, `${keyBase}#${k}`, t)
+            host.setAttribute(FOLD_STAMP_ATTR, stamp)
+            el.insertAdjacentElement('afterend', host)
+          }
+        }
+        bubble.setAttribute(FOLD_SIG_ATTR, sig)
+        foldedBubbles.add(bubble)
       }
 
       function scanFolds() {
@@ -1521,38 +1748,7 @@ window.__ModuleLoader__.load({
         try { bubbles = document.querySelectorAll(FOLD_BUBBLE_SEL) } catch (e) { return }
         for (const bubble of bubbles) {
           if (!bubble.isConnected) continue
-          const holder = bubble.closest('[data-chat-flow-key]')
-          const flowKey = holder ? holder.getAttribute('data-chat-flow-key') || '' : ''
-          const kids = [...bubble.children]
-          for (let i = 0; i < kids.length; i += 1) {
-            const el = kids[i]
-            if (el.classList.contains(FOLD_HOST_CLASS)) continue
-            if (!isFoldRun(el)) continue
-            const text = el.textContent || ''
-            const stamp = foldStamp(text)
-            const marked = el.getAttribute(FOLD_RUN_ATTR) || ''
-            if (marked === `1|${stamp}` || marked === `0|${stamp}`) continue // current
-            const plan = foldPlanFor(text)
-            if (!plan) {
-              if (marked.startsWith('1|')) unfoldRun(el, stamp)
-              else el.setAttribute(FOLD_RUN_ATTR, `0|${stamp}`)
-              continue
-            }
-            // Echo/pending rows have no flow key — fall back to a content hash so
-            // two simultaneous unkeyed rows never share one open-state slot.
-            const keyBase = `${flowKey || 'h' + hash32(text)}#${i}`
-            foldRun(el, plan, keyBase, stamp)
-          }
-          // Drop orphan hosts (e.g. React remounted the run span underneath us).
-          for (const el of [...bubble.children]) {
-            if (!el.classList.contains(FOLD_HOST_CLASS)) continue
-            const prev = el.previousElementSibling
-            const mark = prev && prev.getAttribute ? prev.getAttribute(FOLD_RUN_ATTR) : null
-            const keep = !!mark && mark.startsWith('1|') &&
-              prev.style.display === 'none' &&
-              el.getAttribute(FOLD_STAMP_ATTR) === mark.slice(2)
-            if (!keep) el.remove()
-          }
+          try { foldBubble(bubble) } catch (e) { /* never break DSH's render loop */ }
         }
       }
 
@@ -1586,10 +1782,11 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => {
         try {
           for (const host of document.querySelectorAll(`.${FOLD_HOST_CLASS}`)) host.remove()
-          for (const run of document.querySelectorAll(`[${FOLD_RUN_ATTR}]`)) {
+          for (const run of document.querySelectorAll(`[${FOLD_HIDE_ATTR}]`)) {
             run.style.display = ''
-            run.removeAttribute(FOLD_RUN_ATTR)
+            run.removeAttribute(FOLD_HIDE_ATTR)
           }
+          for (const bubble of document.querySelectorAll(`[${FOLD_SIG_ATTR}]`)) bubble.removeAttribute(FOLD_SIG_ATTR)
         } catch (e) { /* noop */ }
         foldOpenKeys.clear()
       }, 'paste-code-block: fold restore')
@@ -1651,14 +1848,15 @@ window.__ModuleLoader__.load({
         const target = document.activeElement
         if (!target || !(target instanceof Element)) return
         const sid = sessionFor(target)
-        if (!sid) return
+        if (!sid) { pcbDiag("EXIT-SID-NULL", "activeEl=" + target.tagName + "." + (target.className || "") + " mark=" + !!document.querySelector("[data-dsh-pcb]")); return }
         const block = parseBlock(text)
-        if (!block) { console.log('[dsh-paste-code-block] paste NOT block', text.length); return }
+        if (!block) { pcbDiag("EXIT-NOT-BLOCK", "len=" + text.length); console.log('[dsh-paste-code-block] paste NOT block', text.length); return }
         if (pasteStorm.seen(text, Date.now())) {
           // Consume the event (never let the raw text fall through to the
           // composer) but create nothing.
           ev.preventDefault()
           ev.stopPropagation()
+          pcbDiag("EXIT-STORM", "len=" + text.length);
           console.log('[dsh-paste-code-block] storm paste ignored (<' + STORM_WINDOW_MS + 'ms repeat)')
           return
         }
@@ -1666,11 +1864,14 @@ window.__ModuleLoader__.load({
         // trusted=false means a page script dispatched this paste (userscript,
         // clipboard bridge, replay glue) rather than a real keystroke — the
         // load-log line that names the source when a storm report comes in.
+        pcbDiag("ENTER-INTERCEPT", "sid=" + sid + " lines=" + block.lines.length + " code=" + block.isCode + " trusted=" + ev.isTrusted);
         console.log('[dsh-paste-code-block] intercept', block.isCode ? 'code' : 'text', block.lines.length, 'lang=', block.lang, 'trusted=', ev.isTrusted)
         ev.preventDefault()
         ev.stopPropagation()
         try {
           if (!controller.attach(sid, block)) {
+            const snapX = (() => { try { const s = controller.scope(sid).shell.snapshot; return "phase=" + (s && s.phase) + " draftLen=" + (s && s.draft ? s.draft.length : -1) + " rev=" + (s && s.draftRev) } catch (e) { return "scope-throw:" + e.message } })();
+            pcbDiag("EXIT-ATTACH-FAIL", snapX);
             console.log('[dsh-paste-code-block] attach failed; plain insert instead')
             const { actx, shell } = controller.scope(sid)
             const input = shell.snapshot
@@ -1685,6 +1886,17 @@ window.__ModuleLoader__.load({
               console.warn('[dsh-paste-code-block] could not insert block text')
             }
           }
+          pcbDiag("OK-ATTACHED", "id=" + block.id);
+          setTimeout(() => { try {
+            const sc = controller.scope(sid).shell.snapshot || {};
+            const occ = (sc.occurrences || []).filter((o) => o.source === 'paste-code-block').length;
+            var __chip = document.querySelector('[data-composer-chip="paste-code-block"]'); var __r = __chip && __chip.getBoundingClientRect(); var __cs = __chip && getComputedStyle(__chip); var __csi = __chip && __chip.firstElementChild && getComputedStyle(__chip.firstElementChild); pcbDiag("POST-ATTACH", "phase=" + sc.phase + " draftLen=" + (sc.draft ? sc.draft.length : -1) + " occ=" + occ + " chips=" + document.querySelectorAll('[data-composer-chip="paste-code-block"]').length);
+            var __hosts = []; var __seen = new Set();
+            document.querySelectorAll('[data-composer-chip]').forEach(function (c) { var k = c.getAttribute('data-composer-chip') + '|' + (c.closest('[data-composer-seat]') ? 'seat' : (c.closest('[data-message-id],[data-message-id] *,.dsh-msg,.message') ? 'msg' : '?')); if (!__seen.has(k)) { __seen.add(k); __hosts.push(k) } });
+            pcbDiag("CHIP-HOSTS", __hosts.join(',') || 'none');
+            var __seats = [].map.call(document.querySelectorAll('[data-composer-seat]'), function (s) { return s.getBoundingClientRect().width + 'x' + Math.round(s.getBoundingClientRect().height) }).join(',');
+            pcbDiag("SEATS", "n=" + document.querySelectorAll('[data-composer-seat]').length + " sizes=" + (__seats || '-') + " ce=" + document.querySelectorAll('[contenteditable="true"]').length); pcbDiag("CHIP-DOM", __chip ? ("rect=" + Math.round(__r.width) + "x" + Math.round(__r.height) + "@" + Math.round(__r.x) + "," + Math.round(__r.y) + " disp=" + __cs.display + " vis=" + __cs.visibility + " op=" + __cs.opacity + " innerDisp=" + (__csi ? __csi.display : "?") + " txt=(" + __chip.textContent.slice(0, 24) + ") parent=" + (__chip.parentElement ? __chip.parentElement.tagName + "." + String(__chip.parentElement.className).slice(0, 40) : "?")) : "NO-CHIP");
+          } catch (e) { pcbDiag("POST-ATTACH-THROW", e.message) } }, 350);
         } catch (err) {
           console.error('[paste-code-block] attach failed:', err)
         }
