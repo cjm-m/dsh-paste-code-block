@@ -1341,12 +1341,17 @@ window.__ModuleLoader__.load({
     const FOLD_STAMP_ATTR = 'data-dsh-pcb-stamp'  // on a host: the content stamp it was built from
     const FOLD_HIDE_ATTR = 'data-dsh-pcb-hide'    // on every run the scan hid: the same stamp
     const FOLD_SIG_ATTR = 'data-dsh-pcb-sig'      // on the bubble: '<mode>|<stamp>' it was folded for
+    // Match the message bubble container case-insensitively: DSH renamed its
+    // chat bubble class from `...bubble...` to `_367UGW_chatBubble` (capital B),
+    // and a bare [class*="bubble"] comparison is case-sensitive — it matched
+    // nothing on the new shell, so sent fenced blocks were never folded and
+    // stayed expanded in the transcript. The `i` flag makes it match both.
     const FOLD_BUBBLE_SEL = [
       '[data-chat-flow-kind="user"]',
       '[data-chat-flow-kind="steering"]',
       '[data-submission-echo]',
       '[data-pending-steering]',
-    ].map((s) => `${s} [class*="bubble"]`).join(',')
+    ].map((s) => `${s} [class*="bubble" i]`).join(',')
     const foldOpenKeys = new Set() // user-toggled-open cards, stable across rebuilds
     let foldRev = 0                // bumped on locale switch so cards re-title
 
